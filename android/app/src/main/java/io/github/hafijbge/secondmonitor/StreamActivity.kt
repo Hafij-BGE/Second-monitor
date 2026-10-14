@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -88,9 +89,13 @@ class StreamActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         val (w, h, dpi) = screenSize()
+        // Ask for the biggest size this phone's decoder can play, not the
+        // raw screen size (e.g. 2560x1600 fails on many MediaTek decoders).
+        val decoder = DecoderLimits.choose(w, h)
+        Log.i(TAG, "screen ${w}x$h, decoder ${decoder.codecName} -> ${decoder.width}x${decoder.height}")
         client = StreamClient(
             host(), intent.getIntExtra(EXTRA_PORT, Protocol.DEFAULT_PORT),
-            holder.surface, w, h, dpi, this,
+            holder.surface, decoder.codecName, decoder.width, decoder.height, dpi, this,
         ).also { it.start() }
     }
 
@@ -173,6 +178,7 @@ class StreamActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener
     }
 
     companion object {
+        private const val TAG = "StreamActivity"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
     }

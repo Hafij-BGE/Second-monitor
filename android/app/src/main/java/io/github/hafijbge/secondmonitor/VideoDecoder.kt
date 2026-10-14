@@ -9,8 +9,16 @@ import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
 /** Hardware H.264 decoder rendering straight to a Surface. */
-class VideoDecoder(surface: Surface, width: Int, height: Int, sps: ByteArray, pps: ByteArray) {
-    private val codec: MediaCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+class VideoDecoder(
+    codecName: String?,
+    surface: Surface,
+    width: Int,
+    height: Int,
+    sps: ByteArray,
+    pps: ByteArray,
+) {
+    private val codec: MediaCodec = codecName?.let { MediaCodec.createByCodecName(it) }
+        ?: MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     @Volatile private var running = true
     private val outputThread: Thread
 
@@ -26,8 +34,13 @@ class VideoDecoder(surface: Surface, width: Int, height: Int, sps: ByteArray, pp
                 setInteger(MediaFormat.KEY_PRIORITY, 0) // realtime
             }
         }
-        codec.configure(format, surface, null, 0)
-        codec.start()
+        try {
+            codec.configure(format, surface, null, 0)
+            codec.start()
+        } catch (e: Exception) {
+            codec.release()
+            throw IllegalStateException("video decoder rejected ${width}x$height: ${e.message}", e)
+        }
         outputThread = thread(name = "decoder-output") { drainOutput() }
     }
 

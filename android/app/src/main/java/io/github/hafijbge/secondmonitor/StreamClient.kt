@@ -20,6 +20,7 @@ class StreamClient(
     private val host: String,
     private val port: Int,
     private val surface: Surface,
+    private val decoderName: String?,
     private val screenWidth: Int,
     private val screenHeight: Int,
     private val dpi: Int,
@@ -165,7 +166,7 @@ class StreamClient(
                 return
             }
             dec = VideoDecoder(
-                surface, videoWidth, videoHeight,
+                decoderName, surface, videoWidth, videoHeight,
                 VideoDecoder.withStartCode(sps), VideoDecoder.withStartCode(pps),
             )
             decoder = dec

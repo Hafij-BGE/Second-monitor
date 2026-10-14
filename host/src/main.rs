@@ -3,6 +3,7 @@ mod backend;
 mod discovery;
 mod encoder;
 mod protocol;
+mod scale;
 
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
@@ -72,8 +73,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let listener = TcpListener::bind(("0.0.0.0", args.port))
-        .with_context(|| format!("cannot listen on TCP port {}", args.port))?;
+    let listener = match TcpListener::bind(("0.0.0.0", args.port)) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => anyhow::bail!(
+            "TCP port {} is busy. Second Monitor host is probably already running \
+             (close the other window), or pick another port with --port",
+            args.port
+        ),
+        Err(e) => {
+            return Err(e).with_context(|| format!("cannot listen on TCP port {}", args.port))
+        }
+    };
     log::info!("waiting for the Android app on TCP port {}", args.port);
     if !args.no_discovery {
         discovery::spawn(args.port);
@@ -176,6 +186,18 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
                 }
             },
             (None, false) => continue,
+        };
+        // Never send more pixels than the viewer's decoder accepts.
+        let (fw, fh) = scale::fit_size(
+            frame.width,
+            frame.height,
+            hello.width as u32,
+            hello.height as u32,
+        );
+        let frame = if (fw, fh) != (frame.width, frame.height) {
+            scale::resize(&frame, fw, fh)
+        } else {
+            frame
         };
 
         let rebuild = encoder.as_ref().map_or(true, |e| e.needs_rebuild(&frame));
