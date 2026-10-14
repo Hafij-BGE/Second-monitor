@@ -157,6 +157,7 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
                     monitor,
                     width: 0,
                     height: 0,
+                    cursor_overlay: false,
                 };
                 let target = pick_output(&req)?;
                 let mut dup = Duplicator::new(&target)?;
@@ -182,6 +183,9 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
             rect,
             pressed: false,
         }))),
+        // Desktop duplication gives the pointer shape too, but for now it is
+        // drawn into frames.
+        cursor: None,
         stop: Some(Box::new(move || stop_flag.store(false, Ordering::Relaxed))),
     })
 }
