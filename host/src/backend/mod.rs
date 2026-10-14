@@ -41,7 +41,9 @@ pub struct CaptureRequest {
     /// Linux: connector name (e.g. "eDP-1"). Windows: monitor index from `--list`.
     pub monitor: Option<String>,
     /// Preferred size; only honoured where the backend can create monitors.
+    #[cfg_attr(windows, allow(dead_code))]
     pub width: u32,
+    #[cfg_attr(windows, allow(dead_code))]
     pub height: u32,
 }
 

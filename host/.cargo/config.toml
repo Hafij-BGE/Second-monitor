@@ -1,0 +1,12 @@
+# Cross-compiling from Linux with MinGW: link the C++ runtime (used by
+# OpenH264) statically so the .exe doesn't need libstdc++-6.dll next to it.
+# The trailing libs resolve libstdc++'s own dependencies, which rustc places
+# before these link args.
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-C", "link-args=-static-libgcc -Wl,--start-group -Wl,-Bstatic -lstdc++ -lgcc -lgcc_eh -Wl,-Bdynamic -lmingw32 -lmingwex -lmsvcrt -lkernel32 -Wl,--end-group",
+]
+
+[env]
+# Stop the cc crate from adding a dynamic -lstdc++ for this target.
+CXXSTDLIB_x86_64_pc_windows_gnu = ""

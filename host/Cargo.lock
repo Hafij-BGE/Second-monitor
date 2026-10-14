@@ -1078,6 +1078,7 @@ dependencies = [
  "openh264",
  "pipewire",
  "rayon",
+ "serde",
  "windows",
  "zbus",
 ]
