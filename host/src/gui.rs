@@ -11,7 +11,16 @@ use egui::{
 
 use crate::backend::{self, Mode};
 use crate::files::human_size;
-use crate::state::{SessionCommand, Shared, TransferState};
+use crate::state::{AdbDevice, SessionCommand, Shared, TransferState};
+use crate::{mirror, storage};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Screen,
+    Mirror,
+    Storage,
+    Shortcuts,
+}
 
 pub fn run(shared: Arc<Shared>) -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -87,6 +96,10 @@ struct App {
     host_name: String,
     applied_dark: Option<bool>,
     logo: Option<egui::TextureHandle>,
+    tab: Tab,
+    /// Text fields.
+    mirror_address: String,
+    storage_address: String,
 }
 
 impl App {
@@ -101,6 +114,15 @@ impl App {
             host_name: crate::discovery::host_name(),
             applied_dark: None,
             logo: load_logo(&cc.egui_ctx),
+            // SMON_TAB=mirror|storage|shortcuts opens that tab (for screenshots).
+            tab: match std::env::var("SMON_TAB").as_deref() {
+                Ok("mirror") => Tab::Mirror,
+                Ok("storage") => Tab::Storage,
+                Ok("shortcuts") => Tab::Shortcuts,
+                _ => Tab::Screen,
+            },
+            mirror_address: String::new(),
+            storage_address: String::new(),
         }
     }
 
@@ -314,8 +336,8 @@ impl App {
                         RichText::new("Plug in the tablet with USB debugging on.").color(p.muted),
                     );
                 } else {
-                    for d in &status.usb_devices {
-                        ui.label(RichText::new(format!("✔ {d}")).color(p.good));
+                    for d in status.usb_devices.iter().filter(|d| !d.wifi) {
+                        ui.label(RichText::new(format!("✔ {}", d.model)).color(p.good));
                     }
                     ui.label(
                         RichText::new("Tap \"USB cable\" in the app.")
@@ -603,6 +625,362 @@ impl App {
         });
     }
 
+    fn tabs(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        Frame::default()
+            .fill(p.card)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::same(4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.columns(4, |cols| {
+                    for (col, (tab, label)) in cols.iter_mut().zip([
+                        (Tab::Screen, "🖥 Screen"),
+                        (Tab::Mirror, "📱 Mirror"),
+                        (Tab::Storage, "📂 Storage"),
+                        (Tab::Shortcuts, "⌨ Keys"),
+                    ]) {
+                        let selected = self.tab == tab;
+                        let text = RichText::new(label).size(13.5).color(if selected {
+                            Color32::WHITE
+                        } else {
+                            p.muted
+                        });
+                        let button = egui::Button::new(text)
+                            .fill(if selected {
+                                p.accent
+                            } else {
+                                Color32::TRANSPARENT
+                            })
+                            .stroke(Stroke::NONE)
+                            .corner_radius(CornerRadius::same(9))
+                            .min_size(Vec2::new(col.available_width(), 34.0));
+                        if col.add(button).clicked() {
+                            self.tab = tab;
+                        }
+                    }
+                });
+            });
+        ui.add_space(12.0);
+    }
+
+    fn mirror_devices_card(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        let status = self.shared.status().clone();
+        let settings = self.shared.settings();
+        self.card(ui, "PHONE MIRROR", |app, ui| {
+            ui.label(
+                RichText::new("See and control your phone on this PC, with sound. Works over a cable or WiFi.")
+                    .color(p.text),
+            );
+            ui.add_space(6.0);
+            let Some((_, version)) = &status.scrcpy else {
+                ui.label(RichText::new("Mirroring engine not found.").color(p.warn).strong());
+                let hint = if cfg!(windows) {
+                    "Put scrcpy.exe (and its files) next to extendo.exe, or reinstall Extendo."
+                } else {
+                    "Install it with:  sudo apt install scrcpy   then restart Extendo."
+                };
+                ui.label(RichText::new(hint).color(p.muted));
+                return;
+            };
+            if status.adb_path.is_none() {
+                ui.label(RichText::new("adb not found: install Android platform-tools.").color(p.warn));
+                return;
+            }
+            if status.usb_devices.is_empty() {
+                ui.label(
+                    RichText::new("No phone found. Plug one in with USB debugging on, or connect over WiFi below.")
+                        .color(p.muted),
+                );
+            }
+            for d in status.usb_devices.clone() {
+                let running = status.mirroring.contains(&d.serial);
+                let busy = status.mirror_busy.iter().find(|(s, _)| *s == d.serial).map(|(_, m)| m.clone());
+                Frame::default()
+                    .fill(p.bg)
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(Margin::symmetric(14, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(if d.wifi { "📶" } else { "🔌" }).size(18.0));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&d.model).strong().color(p.text));
+                                let how = if d.wifi { format!("WiFi · {}", d.serial) } else { "USB cable".into() };
+                                ui.label(RichText::new(how).size(12.0).color(p.muted));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if running {
+                                    if ui.button("■  Stop").clicked() {
+                                        mirror::stop(&d.serial);
+                                    }
+                                    ui.label(RichText::new("● Mirroring").color(p.good));
+                                } else if ui
+                                    .add(egui::Button::new(RichText::new("▶  Mirror").color(Color32::WHITE)).fill(p.accent))
+                                    .clicked()
+                                {
+                                    mirror::start(app.shared.clone(), d.clone());
+                                }
+                                if d.wifi {
+                                    if ui.small_button("Forget").on_hover_text("Disconnect and remove").clicked() {
+                                        mirror::disconnect(app.shared.clone(), d.serial.clone(), true);
+                                    }
+                                } else if let Some(msg) = &busy {
+                                    ui.spinner();
+                                    ui.label(RichText::new(msg).size(12.0).color(p.muted));
+                                } else if ui
+                                    .small_button("📶 Use WiFi")
+                                    .on_hover_text("Switch this phone to WiFi so you can unplug the cable")
+                                    .clicked()
+                                {
+                                    mirror::enable_wifi(app.shared.clone(), d.clone());
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Connect by address");
+                ui.add(egui::TextEdit::singleline(&mut app.mirror_address).hint_text("192.168.1.50").desired_width(160.0));
+                if ui.button("Connect").clicked() && !app.mirror_address.trim().is_empty() {
+                    mirror::connect(app.shared.clone(), app.mirror_address.trim().to_string());
+                }
+            });
+            let offline: Vec<&String> = settings
+                .wifi_phones
+                .iter()
+                .filter(|a| !status.usb_devices.iter().any(|d| &d.serial == *a))
+                .collect();
+            if !offline.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Saved:").size(12.0).color(p.muted));
+                    for a in offline {
+                        if ui.small_button(format!("⟳ {a}")).on_hover_text("Reconnect").clicked() {
+                            mirror::connect(app.shared.clone(), a.clone());
+                        }
+                    }
+                });
+            }
+            ui.label(
+                RichText::new(format!(
+                    "WiFi: plug the phone in once and press \"Use WiFi\". Android 11+ can also pair with Wireless debugging. · {version}"
+                ))
+                .size(12.0)
+                .color(p.muted),
+            );
+            if status.viewer.as_ref().is_some_and(|v| v.usb) && !status.mirroring.is_empty() {
+                ui.label(
+                    RichText::new("Tip: don't mirror the tablet that is showing your PC: it would show itself forever.")
+                        .size(12.0)
+                        .color(p.warn),
+                );
+            }
+        });
+    }
+
+    fn mirror_options_card(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        let m = self.shared.settings().mirror;
+        self.card(ui, "MIRROR OPTIONS", |app, ui| {
+            let mut next = m.clone();
+            egui::Grid::new("mirror_opts")
+                .num_columns(2)
+                .spacing([18.0, 12.0])
+                .show(ui, |ui| {
+                    ui.label("Resolution");
+                    let label = match next.max_size {
+                        0 => "Full".to_string(),
+                        n => format!("{n} px"),
+                    };
+                    egui::ComboBox::from_id_salt("mirror_size")
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for (v, l) in [
+                                (0, "Full"),
+                                (1920, "1920 px"),
+                                (1600, "1600 px"),
+                                (1280, "1280 px"),
+                                (1024, "1024 px"),
+                                (800, "800 px"),
+                            ] {
+                                ui.selectable_value(&mut next.max_size, v, l);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Frame rate");
+                    ui.horizontal(|ui| {
+                        for f in [30, 60, 90, 120] {
+                            ui.selectable_value(&mut next.max_fps, f, format!("{f}"));
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Bitrate");
+                    ui.add(egui::Slider::new(&mut next.bitrate_mbps, 2..=32).suffix(" Mbit/s"));
+                    ui.end_row();
+                });
+            ui.add_space(6.0);
+            ui.checkbox(
+                &mut next.screen_off,
+                "🌙  Turn the phone screen off while mirroring (saves battery; Alt+O anytime)",
+            );
+            ui.checkbox(
+                &mut next.audio,
+                "🔊  Play the phone's sound on this PC (Android 11+)",
+            );
+            ui.checkbox(
+                &mut next.stay_awake,
+                "☕  Keep the phone awake while plugged in",
+            );
+            ui.checkbox(
+                &mut next.physical_keyboard,
+                "⌨  Act as a physical keyboard (games, keyboard layouts)",
+            );
+            ui.checkbox(&mut next.show_touches, "👆  Show touches on the phone");
+            ui.checkbox(&mut next.always_on_top, "📌  Keep the mirror window on top");
+            ui.checkbox(&mut next.fullscreen, "⛶  Start in fullscreen");
+            ui.checkbox(
+                &mut next.power_off_on_close,
+                "⏻  Lock the phone when the window closes",
+            );
+            ui.checkbox(
+                &mut next.record,
+                "⏺  Record to a video in Downloads/Extendo/Recordings",
+            );
+            ui.checkbox(
+                &mut next.camera,
+                "📷  Show the phone's camera instead of its screen (Android 12+)",
+            );
+            ui.label(
+                RichText::new("Changes apply to the next mirror window.")
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            if next != m {
+                app.update_setting(|s| s.mirror = next);
+            }
+        });
+    }
+
+    fn storage_card(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        let status = self.shared.status().clone();
+        if self.storage_address.is_empty() {
+            self.storage_address = self.shared.settings().storage_address;
+        }
+        self.card(ui, "PHONE STORAGE", |app, ui| {
+            ui.label(RichText::new("Browse and copy your phone's files from this PC, like a USB drive.").color(p.text));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("1. Open Extendo on the phone, then Phone storage, then Start.\n2. Open it here. When asked, log in as \"extendo\" with the password shown on the phone.")
+                    .color(p.muted),
+            );
+            ui.add_space(10.0);
+
+            ui.label(RichText::new("🔌 Over USB cable").strong().color(p.text));
+            let usb: Vec<AdbDevice> = status.usb_devices.iter().filter(|d| !d.wifi).cloned().collect();
+            if usb.is_empty() {
+                ui.label(RichText::new("No phone plugged in with USB debugging on.").size(12.0).color(p.muted));
+            }
+            for d in usb {
+                ui.horizontal(|ui| {
+                    ui.label(&d.model);
+                    if ui.button("📂  Open files").clicked() {
+                        storage::open_usb(app.shared.clone(), d.serial.clone());
+                    }
+                });
+            }
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("📶 Over WiFi").strong().color(p.text));
+                if status.storage_searching {
+                    ui.spinner();
+                } else if ui.small_button("⟳ Find phones").clicked() {
+                    storage::search(app.shared.clone());
+                }
+            });
+            for ph in &status.storage_phones {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{}  ·  {}", ph.name, ph.address));
+                    if ui.button("📂  Open files").clicked() {
+                        storage::open(&format!("{}:{}", ph.address, ph.port));
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.label("Address");
+                ui.add(egui::TextEdit::singleline(&mut app.storage_address).hint_text("192.168.1.50").desired_width(160.0));
+                if ui.button("Open").clicked() && !app.storage_address.trim().is_empty() {
+                    let address = app.storage_address.trim().to_string();
+                    app.update_setting(|s| s.storage_address = address.clone());
+                    storage::open(&address);
+                }
+            });
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Files opens the phone in your file manager (ftp://). Only use it on networks you trust.")
+                    .size(12.0)
+                    .color(p.muted),
+            );
+        });
+    }
+
+    fn shortcuts_card(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        self.card(ui, "PHONE MIRROR SHORTCUTS", |_, ui| {
+            ui.label(RichText::new("Use these in the mirror window. Alt can be replaced by the Super (Windows) key.").color(p.muted));
+            ui.add_space(6.0);
+            shortcut_grid(ui, p, "mirror_keys", mirror::SHORTCUTS);
+        });
+        self.card(ui, "TABLET GESTURES (SECOND SCREEN)", |_, ui| {
+            shortcut_grid(
+                ui,
+                p,
+                "tablet_keys",
+                &[
+                    (
+                        "Edge handle ‹",
+                        "Open the toolbar: keyboard, Ctrl/Alt/Shift/Super, copy, paste, files",
+                    ),
+                    (
+                        "Touchscreen mode",
+                        "Touch the PC directly; pinch and swipe work on GNOME",
+                    ),
+                    ("Trackpad · tap", "Click"),
+                    ("Trackpad · two-finger tap", "Right-click"),
+                    ("Trackpad · three-finger tap", "Middle-click"),
+                    ("Trackpad · two fingers", "Scroll"),
+                    ("Trackpad · press and hold", "Drag"),
+                    (
+                        "Stylus or mouse",
+                        "Points directly; stylus button = right-click",
+                    ),
+                    ("Keyboard on the tablet", "Types on the PC"),
+                ],
+            );
+        });
+        self.card(ui, "THIS WINDOW", |_, ui| {
+            shortcut_grid(
+                ui,
+                p,
+                "window_keys",
+                &[
+                    (
+                        "Drop files on the window",
+                        "Send them to the connected tablet",
+                    ),
+                    ("Click a WiFi address", "Copy it"),
+                ],
+            );
+        });
+    }
+
     fn footer(&mut self, ui: &mut Ui) {
         let p = self.palette();
         ui.add_space(16.0);
@@ -684,11 +1062,22 @@ impl eframe::App for App {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         self.header(ui);
-                        self.status_card(ui);
-                        self.connect_card(ui);
-                        self.display_card(ui);
-                        self.files_card(ui);
-                        self.options_card(ui);
+                        self.tabs(ui);
+                        match self.tab {
+                            Tab::Screen => {
+                                self.status_card(ui);
+                                self.connect_card(ui);
+                                self.display_card(ui);
+                                self.files_card(ui);
+                                self.options_card(ui);
+                            }
+                            Tab::Mirror => {
+                                self.mirror_devices_card(ui);
+                                self.mirror_options_card(ui);
+                            }
+                            Tab::Storage => self.storage_card(ui),
+                            Tab::Shortcuts => self.shortcuts_card(ui),
+                        }
                         self.log_card(ui);
                         self.footer(ui);
                     });
@@ -753,6 +1142,37 @@ fn stat(ui: &mut Ui, p: &Palette, value: &str, label: &str) {
                 ui.label(RichText::new(label).size(11.0).color(p.muted));
             });
         });
+}
+
+fn shortcut_grid(ui: &mut Ui, p: &Palette, _id: &str, rows: &[(&str, &str)]) {
+    // Keys column scales with the window; descriptions wrap.
+    let key_width = (ui.available_width() * 0.42).clamp(120.0, 240.0);
+    for (i, (keys, what)) in rows.iter().enumerate() {
+        let fill = if i % 2 == 0 {
+            p.bg
+        } else {
+            Color32::TRANSPARENT
+        };
+        Frame::default()
+            .fill(fill)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [key_width, 18.0],
+                        egui::Label::new(
+                            RichText::new(*keys)
+                                .font(FontId::monospace(13.0))
+                                .color(p.accent),
+                        )
+                        .wrap(),
+                    );
+                    ui.add(egui::Label::new(RichText::new(*what).color(p.text)).wrap());
+                });
+            });
+    }
 }
 
 fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {

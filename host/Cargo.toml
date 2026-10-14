@@ -53,7 +53,7 @@ maintainer = "Md Hafijur Rahman <mdhafijur.rahman@ogr.deu.edu.tr>"
 section = "video"
 priority = "optional"
 depends = "$auto"
-recommends = "adb"
+recommends = "adb, scrcpy"
 # Replaces the package from before the rename.
 conflicts = "second-monitor"
 replaces = "second-monitor"

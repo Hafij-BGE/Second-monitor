@@ -28,6 +28,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "..\target\release\extendo.exe"; DestDir: "{app}"; Flags: ignoreversion
+; scrcpy (Extendo Mirror) and adb (USB), downloaded by CI into windows\scrcpy.
+Source: "scrcpy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\Extendo"; Filename: "{app}\extendo.exe"

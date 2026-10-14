@@ -49,6 +49,14 @@ jobs:
           workspaces: host
       - name: Build
         run: cargo build --release
+      - name: Download scrcpy and adb
+        shell: pwsh
+        run: |
+          $v = "3.3.4"
+          Invoke-WebRequest "https://github.com/Genymobile/scrcpy/releases/download/v$v/scrcpy-win64-v$v.zip" -OutFile scrcpy.zip
+          Expand-Archive scrcpy.zip -DestinationPath scrcpy-tmp
+          New-Item -ItemType Directory -Force windows\scrcpy | Out-Null
+          Copy-Item -Recurse scrcpy-tmp\scrcpy-win64-v$v\* windows\scrcpy\
       - name: Build installer
         shell: pwsh
         run: |
@@ -58,11 +66,17 @@ jobs:
             choco install innosetup -y --no-progress
           }
           & $iscc "/DAppVersion=$version" windows\installer.iss
-          Copy-Item target\release\extendo.exe target\installer\extendo-portable.exe
+          # Portable: extendo.exe plus scrcpy/adb in one zip.
+          New-Item -ItemType Directory -Force portable | Out-Null
+          Copy-Item target\release\extendo.exe portable\
+          Copy-Item -Recurse windows\scrcpy\* portable\
+          Compress-Archive portable\* target\installer\extendo-portable-$version.zip
       - uses: actions/upload-artifact@v4
         with:
           name: extendo-windows
-          path: host/target/installer/*.exe
+          path: |
+            host/target/installer/*.exe
+            host/target/installer/*.zip
 
   android-apk:
     runs-on: ubuntu-24.04

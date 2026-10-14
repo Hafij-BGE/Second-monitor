@@ -121,6 +121,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumeTick.intValue++
         intent.getStringExtra(EXTRA_ERROR)?.let {
             Toast.makeText(this, getString(R.string.disconnected, it), Toast.LENGTH_LONG).show()
             intent.removeExtra(EXTRA_ERROR)
@@ -276,6 +277,8 @@ private fun HomeScreen(settings: AppSettings, onSettings: () -> Unit, onConnect:
                     }
                 }
 
+                StorageCard()
+
                 FeatureRow()
                 Spacer(Modifier.height(24.dp))
             }
@@ -345,7 +348,7 @@ private fun FeatureRow() {
 }
 
 @Composable
-private fun SectionCard(
+internal fun SectionCard(
     icon: ImageVector,
     title: String,
     subtitle: String,

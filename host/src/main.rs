@@ -9,10 +9,12 @@ mod encoder;
 mod files;
 mod gui;
 mod logging;
+mod mirror;
 mod protocol;
 mod scale;
 mod server;
 mod state;
+mod storage;
 
 use anyhow::Result;
 use clap::Parser;
@@ -109,6 +111,8 @@ fn main() -> Result<()> {
     let shared = Shared::new(settings);
     logging::attach(shared.clone());
     server::start(shared.clone());
+    mirror::detect(shared.clone());
+    mirror::reconnect_saved(shared.clone());
 
     if !args.headless {
         match gui::run(shared.clone()) {

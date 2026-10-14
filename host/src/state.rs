@@ -28,6 +28,53 @@ pub struct Settings {
     pub clipboard: bool,
     pub save_dir: PathBuf,
     pub dark_theme: bool,
+    pub mirror: MirrorSettings,
+    /// Phones added for WiFi mirroring (ip:port).
+    pub wifi_phones: Vec<String>,
+    /// Last address typed for phone storage over WiFi.
+    pub storage_address: String,
+}
+
+/// Options for Extendo Mirror (scrcpy).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MirrorSettings {
+    /// Longest side in pixels; 0 = full resolution.
+    pub max_size: u32,
+    pub bitrate_mbps: u32,
+    pub max_fps: u32,
+    pub audio: bool,
+    /// Phone screen off while mirroring keeps working.
+    pub screen_off: bool,
+    pub stay_awake: bool,
+    pub show_touches: bool,
+    pub always_on_top: bool,
+    pub fullscreen: bool,
+    /// Simulate a physical keyboard (better for games and layouts).
+    pub physical_keyboard: bool,
+    pub power_off_on_close: bool,
+    pub record: bool,
+    pub camera: bool,
+}
+
+impl Default for MirrorSettings {
+    fn default() -> Self {
+        Self {
+            max_size: 0,
+            bitrate_mbps: 8,
+            max_fps: 60,
+            audio: true,
+            screen_off: false,
+            stay_awake: true,
+            show_touches: false,
+            always_on_top: false,
+            fullscreen: false,
+            physical_keyboard: false,
+            power_off_on_close: false,
+            record: false,
+            camera: false,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -44,6 +91,9 @@ impl Default for Settings {
             clipboard: true,
             save_dir: default_save_dir(),
             dark_theme: true,
+            mirror: MirrorSettings::default(),
+            wifi_phones: Vec::new(),
+            storage_address: String::new(),
         }
     }
 }
@@ -115,12 +165,36 @@ pub struct Transfer {
     pub path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdbDevice {
+    pub serial: String,
+    pub model: String,
+    pub wifi: bool,
+}
+
+/// A phone running the Extendo storage server, found on WiFi.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoragePhone {
+    pub name: String,
+    pub address: String,
+    pub port: u16,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Status {
     /// Error from binding the port, if any.
     pub server_error: Option<String>,
     pub adb_path: Option<PathBuf>,
-    pub usb_devices: Vec<String>,
+    /// All devices adb sees, USB and WiFi.
+    pub usb_devices: Vec<AdbDevice>,
+    /// scrcpy used by Extendo Mirror, with its version line.
+    pub scrcpy: Option<(PathBuf, String)>,
+    /// Serials with a mirror window open.
+    pub mirroring: Vec<String>,
+    /// Busy message per serial (e.g. "Switching to WiFi…").
+    pub mirror_busy: Vec<(String, String)>,
+    pub storage_phones: Vec<StoragePhone>,
+    pub storage_searching: bool,
     pub viewer: Option<Viewer>,
     pub transfers: Vec<Transfer>,
 }
