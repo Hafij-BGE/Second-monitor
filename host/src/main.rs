@@ -213,6 +213,11 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
         } else {
             frame
         };
+        // GNOME re-sends the whole virtual monitor when only the pointer
+        // moved. The pointer travels separately, so skip identical frames.
+        if !force && last.as_ref().is_some_and(|l| same_pixels(l, &frame)) {
+            continue;
+        }
 
         let rebuild = encoder.as_ref().map_or(true, |e| e.needs_rebuild(&frame));
         if rebuild {
@@ -311,6 +316,16 @@ fn flush_cursor(
     {
         closed.store(true, Ordering::Relaxed);
     }
+}
+
+fn same_pixels(a: &Frame, b: &Frame) -> bool {
+    use rayon::prelude::*;
+    a.width == b.width
+        && a.height == b.height
+        && a.bgra
+            .par_chunks(1 << 18)
+            .zip(b.bgra.par_chunks(1 << 18))
+            .all(|(x, y)| x == y)
 }
 
 /// Per-stage timings, logged every few seconds at debug level.
