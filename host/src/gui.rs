@@ -519,7 +519,7 @@ impl App {
             ui.horizontal(|ui| {
                 if ui.small_button("📂 Open folder").clicked() {
                     let _ = std::fs::create_dir_all(&settings.save_dir);
-                    open_path(&settings.save_dir);
+                    crate::desktop::open_in_file_manager(&settings.save_dir.display().to_string());
                 }
                 if ui.small_button("Change…").clicked() {
                     let shared = app.shared.clone();
@@ -569,7 +569,7 @@ impl App {
                             if t.incoming {
                                 if let Some(path) = &t.path {
                                     if ui.small_button("Open").clicked() {
-                                        open_path(path);
+                                        crate::desktop::open_file(path);
                                     }
                                 }
                             }
@@ -1220,15 +1220,4 @@ fn local_addresses() -> Vec<IpAddr> {
     ips.sort();
     ips.dedup();
     ips
-}
-
-fn open_path(path: &std::path::Path) {
-    let program = if cfg!(windows) {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
-        log::warn!("cannot open {}: {e}", path.display());
-    }
 }

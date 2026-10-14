@@ -92,25 +92,93 @@ pub fn open_usb(shared: Arc<Shared>, serial: String) {
                 return;
             }
         }
-        open(&format!("127.0.0.1:{FTP_PORT}"));
+        // Over the cable we can read the password from the phone's
+        // notification, so the file manager doesn't ask for it.
+        let password = phone_password(&adb, &serial);
+        if password.is_none() {
+            log::warn!("phone storage isn't on: open Extendo on the phone, then Phone storage");
+        }
+        open_url(&format!("127.0.0.1:{FTP_PORT}"), password.as_deref());
     });
+}
+
+fn phone_password(adb: &std::path::PathBuf, serial: &str) -> Option<String> {
+    let out = adb::run(
+        adb,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "dumpsys",
+            "notification",
+            "--noredact",
+        ],
+    )
+    .ok()?;
+    let at = out.find("Sharing phone storage")?;
+    let rest = &out[at..];
+    let p = rest.find("password ")? + "password ".len();
+    let digits: String = rest[p..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    (digits.len() >= 4).then_some(digits)
 }
 
 /// Opens `ftp://extendo@address/` in the file manager.
 pub fn open(address: &str) {
+    open_url(address, None);
+}
+
+fn open_url(address: &str, password: Option<&str>) {
     let address = if address.contains(':') {
         address.to_string()
     } else {
         format!("{address}:{FTP_PORT}")
     };
     let url = format!("ftp://{FTP_USER}@{address}/");
-    log::info!("opening {url} (use the password shown in the Extendo app)");
-    let program = if cfg!(windows) {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    if let Err(e) = std::process::Command::new(program).arg(&url).spawn() {
-        log::warn!("cannot open {url}: {e}");
+    log::info!("opening {url} in the file manager");
+    #[cfg(windows)]
+    {
+        // Explorer accepts the password in the URL.
+        let login = match password {
+            Some(p) => format!("{FTP_USER}:{p}"),
+            None => FTP_USER.to_string(),
+        };
+        crate::desktop::open_in_file_manager(&format!("ftp://{login}@{address}/"));
     }
+    #[cfg(not(windows))]
+    {
+        // GNOME/KDE ignore passwords in URLs; mount first so the file
+        // manager opens without asking. Without a password it asks itself.
+        if let Some(p) = password {
+            mount_gvfs(&url, p);
+        }
+        crate::desktop::open_in_file_manager(&url);
+    }
+}
+
+#[cfg(not(windows))]
+fn mount_gvfs(url: &str, password: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let child = Command::new("gio")
+        .args(["mount", url])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else { return };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "{password}");
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }

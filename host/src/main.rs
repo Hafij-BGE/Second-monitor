@@ -4,6 +4,7 @@
 mod adb;
 mod backend;
 mod clipboard;
+mod desktop;
 mod discovery;
 mod encoder;
 mod files;
