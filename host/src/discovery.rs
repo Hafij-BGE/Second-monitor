@@ -1,11 +1,13 @@
 //! Answers WiFi discovery broadcasts from the Android app.
 
 use std::net::UdpSocket;
+use std::sync::Arc;
 use std::thread;
 
 use crate::protocol::{DISCOVERY_PORT, DISCOVERY_QUERY};
+use crate::state::Shared;
 
-pub fn spawn(tcp_port: u16) {
+pub fn spawn(shared: Arc<Shared>, tcp_port: u16) {
     thread::Builder::new()
         .name("discovery".into())
         .spawn(move || {
@@ -21,7 +23,9 @@ pub fn spawn(tcp_port: u16) {
             let mut buf = [0u8; 64];
             loop {
                 match socket.recv_from(&mut buf) {
-                    Ok((n, from)) if buf[..n].starts_with(DISCOVERY_QUERY) => {
+                    Ok((n, from))
+                        if buf[..n].starts_with(DISCOVERY_QUERY) && shared.settings().wifi =>
+                    {
                         log::debug!("discovery query from {from}");
                         let _ = socket.send_to(reply.as_bytes(), from);
                     }
@@ -33,7 +37,7 @@ pub fn spawn(tcp_port: u16) {
         .expect("spawn discovery thread");
 }
 
-fn host_name() -> String {
+pub fn host_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()

@@ -23,7 +23,7 @@ use zbus::MatchRule;
 use super::{
     Capture, CaptureRequest, CursorImage, CursorUpdate, Frame, FrameSlot, InputSink, Mode,
 };
-use crate::protocol::{Touch, TouchAction};
+use crate::protocol::{MouseButton, MouseEvent, Touch, TouchAction};
 
 const RD_BUS: &str = "org.gnome.Mutter.RemoteDesktop";
 const RD_PATH: &str = "/org/gnome/Mutter/RemoteDesktop";
@@ -297,6 +297,63 @@ impl InputSink for MutterInput {
         if let Err(e) = result {
             log::debug!("touch injection failed: {e:#}");
         }
+    }
+
+    fn mouse(&mut self, event: MouseEvent) {
+        let s = self.stream.as_str();
+        let result = match event {
+            MouseEvent::MoveTo { x, y } => {
+                let (w, h) = unpack(self.size.load(Ordering::Relaxed));
+                let x = x as f64 * w.saturating_sub(1) as f64;
+                let y = y as f64 * h.saturating_sub(1) as f64;
+                self.notify("NotifyPointerMotionAbsolute", &(s, x, y))
+            }
+            MouseEvent::MoveBy { dx, dy } => {
+                self.notify("NotifyPointerMotionRelative", &(dx as f64, dy as f64))
+            }
+            MouseEvent::Button { button, pressed } => {
+                // Linux input event codes BTN_LEFT/RIGHT/MIDDLE.
+                let code: i32 = match button {
+                    MouseButton::Left => 0x110,
+                    MouseButton::Right => 0x111,
+                    MouseButton::Middle => 0x112,
+                };
+                self.notify("NotifyPointerButton", &(code, pressed))
+            }
+            MouseEvent::Scroll { dx, dy, finish } => {
+                // Axis flags: 1 = finish, 4 = finger source (smooth scrolling).
+                const FINISH: u32 = 1;
+                const SOURCE_FINGER: u32 = 4;
+                let flags = SOURCE_FINGER | if finish { FINISH } else { 0 };
+                self.notify("NotifyPointerAxis", &(dx as f64, dy as f64, flags))
+            }
+        };
+        if let Err(e) = result {
+            log::debug!("pointer injection failed: {e:#}");
+        }
+    }
+
+    fn key(&mut self, keysym: u32, pressed: bool) {
+        if let Err(e) = self.notify("NotifyKeyboardKeysym", &(keysym, pressed)) {
+            log::debug!("key injection failed: {e:#}");
+        }
+    }
+}
+
+impl MutterInput {
+    fn notify(
+        &self,
+        method: &str,
+        body: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+    ) -> Result<()> {
+        call::<()>(
+            &self.conn,
+            RD_BUS,
+            self.session.as_str(),
+            RD_SESSION_IFACE,
+            method,
+            body,
+        )
     }
 }
 

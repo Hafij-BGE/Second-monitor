@@ -4,10 +4,13 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-pub fn spawn(port: u16) {
+use crate::state::Shared;
+
+pub fn spawn(shared: Arc<Shared>, port: u16) {
     let Some(adb) = find_adb() else {
         log::warn!(
             "adb not found: USB mode disabled. Install Android platform-tools or set SMON_ADB=/path/to/adb"
@@ -15,12 +18,27 @@ pub fn spawn(port: u16) {
         return;
     };
     log::info!("USB mode: using {}", adb.display());
+    shared.update_status(|s| s.adb_path = Some(adb.clone()));
     thread::Builder::new()
         .name("adb".into())
         .spawn(move || {
             let mut reversed: HashSet<String> = HashSet::new();
             loop {
+                if !shared.settings().usb {
+                    reversed.clear();
+                    shared.update_status(|s| s.usb_devices.clear());
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
                 let devices = list_devices(&adb);
+                {
+                    let mut status = shared.status();
+                    if status.usb_devices != devices {
+                        status.usb_devices = devices.clone();
+                        drop(status);
+                        shared.changed();
+                    }
+                }
                 reversed.retain(|s| devices.contains(s));
                 for serial in devices {
                     if reversed.contains(&serial) {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::protocol::Touch;
+use crate::protocol::{MouseEvent, Touch};
 
 #[cfg(target_os = "linux")]
 mod mutter;
@@ -27,7 +27,9 @@ pub struct Frame {
     pub bgra: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 pub enum Mode {
     /// Add a new virtual monitor (Linux: GNOME virtual monitor; Windows: a
     /// non-primary monitor such as one from Virtual Display Driver).
@@ -77,6 +79,9 @@ pub struct CursorImage {
 
 pub trait InputSink: Send {
     fn touch(&mut self, touch: Touch);
+    fn mouse(&mut self, event: MouseEvent);
+    /// X11 keysym (text uses 0x0100_0000 + Unicode code point).
+    fn key(&mut self, keysym: u32, pressed: bool);
 }
 
 /// A running capture session. Dropping it stops capture.

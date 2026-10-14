@@ -8,15 +8,21 @@ repository = "https://github.com/Hafij-BGE/Second-monitor"
 
 [dependencies]
 anyhow = "1"
+arboard = { version = "3", default-features = false }
 clap = { version = "4", features = ["derive"] }
-env_logger = "0.11"
+dirs = "7"
+eframe = "0.36"
+egui = "0.36"
+if-addrs = "0.15"
 log = "0.4"
 openh264 = "0.9"
 rayon = "1"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.10"
-serde = "1"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -27,6 +33,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
+    "Win32_System_Console",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

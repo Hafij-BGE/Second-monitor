@@ -24,15 +24,18 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, MOUSE_EVENT_FLAGS, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 use super::{Capture, CaptureRequest, Frame, FrameSlot, InputSink, Mode};
-use crate::protocol::{Touch, TouchAction};
+use crate::protocol::{MouseButton, MouseEvent, Touch, TouchAction};
 
 struct OutputInfo {
     adapter: IDXGIAdapter1,
@@ -182,6 +185,8 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         input: Arc::new(Mutex::new(Box::new(MouseInput {
             rect,
             pressed: false,
+            carry: (0.0, 0.0),
+            scroll_carry: (0.0, 0.0),
         }))),
         // Desktop duplication gives the pointer shape too, but for now it is
         // drawn into frames.
@@ -360,11 +365,56 @@ fn draw_cursor(frame: &mut Frame, x: i32, y: i32) {
     }
 }
 
-/// Maps touches on the phone to the mouse on the streamed monitor. Only the
-/// first finger is used.
+/// Maps touches on the phone to the mouse on the streamed monitor (only the
+/// first finger), and trackpad/keyboard events to SendInput.
 struct MouseInput {
     rect: Arc<Mutex<RECT>>,
     pressed: bool,
+    /// Sub-pixel remainder of relative motion and scrolling.
+    carry: (f32, f32),
+    scroll_carry: (f32, f32),
+}
+
+impl MouseInput {
+    fn send_mouse(&self, dx: i32, dy: i32, data: i32, flags: MOUSE_EVENT_FLAGS) {
+        let input = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: data as u32,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        unsafe {
+            SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+
+    /// Absolute move to (x, y) in 0..1 of the streamed monitor.
+    fn move_to(&self, x: f32, y: f32, extra: MOUSE_EVENT_FLAGS) {
+        let r = *self.rect.lock().unwrap();
+        let px = r.left as f32 + x * (r.right - r.left - 1) as f32;
+        let py = r.top as f32 + y * (r.bottom - r.top - 1) as f32;
+        let (vx, vy, vw, vh) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN) as f32,
+                GetSystemMetrics(SM_YVIRTUALSCREEN) as f32,
+                GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2) as f32,
+                GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2) as f32,
+            )
+        };
+        self.send_mouse(
+            ((px - vx) * 65535.0 / (vw - 1.0)) as i32,
+            ((py - vy) * 65535.0 / (vh - 1.0)) as i32,
+            0,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | extra,
+        );
+    }
 }
 
 impl InputSink for MouseInput {
@@ -372,9 +422,6 @@ impl InputSink for MouseInput {
         if t.id != 0 {
             return;
         }
-        let r = *self.rect.lock().unwrap();
-        let px = r.left as f32 + t.x * (r.right - r.left - 1) as f32;
-        let py = r.top as f32 + t.y * (r.bottom - r.top - 1) as f32;
         let button = match t.action {
             TouchAction::Down if !self.pressed => {
                 self.pressed = true;
@@ -386,28 +433,116 @@ impl InputSink for MouseInput {
             }
             _ => Default::default(),
         };
+        self.move_to(t.x, t.y, button);
+    }
+
+    fn mouse(&mut self, event: MouseEvent) {
+        match event {
+            MouseEvent::MoveTo { x, y } => self.move_to(x, y, Default::default()),
+            MouseEvent::MoveBy { dx, dy } => {
+                let (fx, fy) = (dx + self.carry.0, dy + self.carry.1);
+                let (ix, iy) = (fx.trunc(), fy.trunc());
+                self.carry = (fx - ix, fy - iy);
+                if ix != 0.0 || iy != 0.0 {
+                    self.send_mouse(ix as i32, iy as i32, 0, MOUSEEVENTF_MOVE);
+                }
+            }
+            MouseEvent::Button { button, pressed } => {
+                let flags = match (button, pressed) {
+                    (MouseButton::Left, true) => MOUSEEVENTF_LEFTDOWN,
+                    (MouseButton::Left, false) => MOUSEEVENTF_LEFTUP,
+                    (MouseButton::Right, true) => MOUSEEVENTF_RIGHTDOWN,
+                    (MouseButton::Right, false) => MOUSEEVENTF_RIGHTUP,
+                    (MouseButton::Middle, true) => MOUSEEVENTF_MIDDLEDOWN,
+                    (MouseButton::Middle, false) => MOUSEEVENTF_MIDDLEUP,
+                };
+                self.send_mouse(0, 0, 0, flags);
+            }
+            MouseEvent::Scroll { dx, dy, .. } => {
+                // One wheel notch (120) per ~40 px of finger travel.
+                const PX_PER_NOTCH: f32 = 40.0;
+                let sx = dx * 120.0 / PX_PER_NOTCH + self.scroll_carry.0;
+                let sy = dy * 120.0 / PX_PER_NOTCH + self.scroll_carry.1;
+                let (ix, iy) = (sx.trunc(), sy.trunc());
+                self.scroll_carry = (sx - ix, sy - iy);
+                if iy != 0.0 {
+                    // Windows wheel is positive away from the user.
+                    self.send_mouse(0, 0, -(iy as i32), MOUSEEVENTF_WHEEL);
+                }
+                if ix != 0.0 {
+                    self.send_mouse(0, 0, ix as i32, MOUSEEVENTF_HWHEEL);
+                }
+            }
+        }
+    }
+
+    fn key(&mut self, keysym: u32, pressed: bool) {
+        let up = if pressed {
+            Default::default()
+        } else {
+            KEYEVENTF_KEYUP
+        };
+        let input = match keysym_to_vk(keysym) {
+            Some(vk) => KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: up,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+            None => {
+                let cp = if keysym >= 0x0100_0000 {
+                    keysym - 0x0100_0000
+                } else {
+                    keysym
+                };
+                let Some(ch) = char::from_u32(cp) else { return };
+                let mut utf16 = [0u16; 2];
+                let unit = ch.encode_utf16(&mut utf16)[0];
+                KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0),
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | up,
+                    time: 0,
+                    dwExtraInfo: 0,
+                }
+            }
+        };
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: input },
+        };
         unsafe {
-            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN) as f32;
-            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN) as f32;
-            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(2) as f32;
-            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(2) as f32;
-            let input = INPUT {
-                r#type: INPUT_MOUSE,
-                Anonymous: INPUT_0 {
-                    mi: MOUSEINPUT {
-                        dx: ((px - vx) * 65535.0 / (vw - 1.0)) as i32,
-                        dy: ((py - vy) * 65535.0 / (vh - 1.0)) as i32,
-                        mouseData: 0,
-                        dwFlags: MOUSEEVENTF_MOVE
-                            | MOUSEEVENTF_ABSOLUTE
-                            | MOUSEEVENTF_VIRTUALDESK
-                            | button,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            };
             SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
         }
     }
+}
+
+/// Virtual-key code for X11 keysyms that aren't plain text.
+fn keysym_to_vk(keysym: u32) -> Option<u16> {
+    Some(match keysym {
+        0xff08 => 0x08,                                     // BackSpace
+        0xff09 => 0x09,                                     // Tab
+        0xff0d => 0x0d,                                     // Return
+        0xff1b => 0x1b,                                     // Escape
+        0xffff => 0x2e,                                     // Delete
+        0xff50 => 0x24,                                     // Home
+        0xff51 => 0x25,                                     // Left
+        0xff52 => 0x26,                                     // Up
+        0xff53 => 0x27,                                     // Right
+        0xff54 => 0x28,                                     // Down
+        0xff55 => 0x21,                                     // Page Up
+        0xff56 => 0x22,                                     // Page Down
+        0xff57 => 0x23,                                     // End
+        0xff63 => 0x2d,                                     // Insert
+        0xffe1 | 0xffe2 => 0x10,                            // Shift
+        0xffe3 | 0xffe4 => 0x11,                            // Control
+        0xffe9 | 0xffea => 0x12,                            // Alt
+        0xffeb | 0xffec => 0x5b,                            // Super -> Windows key
+        0xffbe..=0xffc9 => 0x70 + (keysym - 0xffbe) as u16, // F1-F12
+        // Letters and digits as virtual keys, so Ctrl+C etc. work.
+        0x61..=0x7a => (keysym - 0x20) as u16,
+        0x41..=0x5a | 0x30..=0x39 => keysym as u16,
+        _ => return None,
+    })
 }
