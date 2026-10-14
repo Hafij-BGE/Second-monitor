@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Second Monitor</string>
+    <string name="usb_title">USB cable</string>
+    <string name="usb_hint">Turn on USB debugging in Developer options, plug into the computer, start the host app, then tap Connect.</string>
+    <string name="usb_connect">Connect over USB</string>
+    <string name="wifi_title">WiFi</string>
+    <string name="wifi_hint">Phone and computer must be on the same network.</string>
+    <string name="wifi_scan">Search for computers</string>
+    <string name="wifi_scanning">Searching…</string>
+    <string name="wifi_none">No computer found. Is the host app running? Check the firewall allows TCP 52020 and UDP 52021.</string>
+    <string name="manual_hint">Computer IP address, e.g. 192.168.1.20</string>
+    <string name="manual_connect">Connect</string>
+    <string name="connecting">Connecting to %1$s…</string>
+    <string name="disconnected">Disconnected: %1$s</string>
+</resources>

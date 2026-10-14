@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Second Monitor Host
+Comment=Use an Android device as a second monitor over USB or WiFi
+Exec=second-monitor
+Icon=video-display
+Terminal=true
+Categories=Utility;

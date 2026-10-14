@@ -1,0 +1,52 @@
+[package]
+name = "second-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Use an Android phone or tablet as a second monitor over USB or WiFi"
+license = "MIT"
+repository = "https://github.com/Hafij-BGE/Second-monitor"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
+openh264 = "0.9"
+rayon = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.10"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[package.metadata.deb]
+maintainer = "Hafij <mdhafijur.rahman@ogr.deu.edu.tr>"
+section = "video"
+priority = "optional"
+depends = "$auto"
+recommends = "adb"
+extended-description = """\
+Streams a virtual GNOME monitor (or a mirrored one) to the Second Monitor \
+Android app over USB (adb) or WiFi. Touches on the device are sent back as \
+input."""
+assets = [
+    ["target/release/second-monitor", "usr/bin/", "755"],
+    ["packaging/second-monitor.desktop", "usr/share/applications/", "644"],
+]
