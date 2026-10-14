@@ -45,6 +45,34 @@ pub struct CaptureRequest {
     pub width: u32,
     #[cfg_attr(windows, allow(dead_code))]
     pub height: u32,
+    /// Send the pointer separately (see [`CursorUpdate`]) instead of drawing
+    /// it into frames. Backends that can't do this ignore it.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub cursor_overlay: bool,
+}
+
+/// Pointer state for viewers that draw the cursor themselves, so moving the
+/// mouse needs no video encoding.
+#[derive(Clone, Debug)]
+pub struct CursorUpdate {
+    /// Hotspot position as a fraction of the frame (0.0..=1.0).
+    pub x: f32,
+    pub y: f32,
+    pub visible: bool,
+    /// Frame width the image is sized for, so the viewer can scale it.
+    pub source_width: u32,
+    /// New cursor image, only when the shape changed.
+    pub image: Option<CursorImage>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CursorImage {
+    pub width: u32,
+    pub height: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    /// Premultiplied RGBA, tightly packed.
+    pub rgba: Vec<u8>,
 }
 
 pub trait InputSink: Send {
@@ -55,6 +83,8 @@ pub trait InputSink: Send {
 pub struct Capture {
     pub frames: Arc<FrameSlot>,
     pub input: Arc<Mutex<Box<dyn InputSink>>>,
+    /// Set when the backend honoured `cursor_overlay`.
+    pub cursor: Option<std::sync::mpsc::Receiver<CursorUpdate>>,
     stop: Option<Box<dyn FnOnce() + Send>>,
 }
 

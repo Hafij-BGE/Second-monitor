@@ -20,7 +20,9 @@ use zbus::blocking::{Connection, MessageIterator};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 use zbus::MatchRule;
 
-use super::{Capture, CaptureRequest, Frame, FrameSlot, InputSink, Mode};
+use super::{
+    Capture, CaptureRequest, CursorImage, CursorUpdate, Frame, FrameSlot, InputSink, Mode,
+};
 use crate::protocol::{Touch, TouchAction};
 
 const RD_BUS: &str = "org.gnome.Mutter.RemoteDesktop";
@@ -33,6 +35,7 @@ const SC_STREAM_IFACE: &str = "org.gnome.Mutter.ScreenCast.Stream";
 
 /// Mutter cursor modes: 0 hidden, 1 embedded in frames, 2 metadata.
 const CURSOR_EMBEDDED: u32 = 1;
+const CURSOR_METADATA: u32 = 2;
 
 pub fn list_monitors() -> Result<Vec<String>> {
     let mut out = Vec::new();
@@ -78,7 +81,12 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
     )?;
 
     let mut record_props: HashMap<&str, Value> = HashMap::new();
-    record_props.insert("cursor-mode", Value::U32(CURSOR_EMBEDDED));
+    let cursor_mode = if req.cursor_overlay {
+        CURSOR_METADATA
+    } else {
+        CURSOR_EMBEDDED
+    };
+    record_props.insert("cursor-mode", Value::U32(cursor_mode));
     let stream: OwnedObjectPath = match req.mode {
         Mode::Extend => {
             record_props.insert("is-platform", Value::Bool(true));
@@ -142,13 +150,20 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         Mode::Extend => Some((req.width, req.height)),
         Mode::Mirror => None,
     };
+    let (cursor_tx, cursor_rx) = if req.cursor_overlay {
+        let (tx, rx) = mpsc::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     {
         let slot = slot.clone();
         let size = size.clone();
         thread::Builder::new()
             .name("pipewire".into())
             .spawn(move || {
-                if let Err(e) = run_pipewire(node_id, want, slot.clone(), size, quit_rx) {
+                let result = run_pipewire(node_id, want, slot.clone(), size, cursor_tx, quit_rx);
+                if let Err(e) = result {
                     slot.fail(format!("PipeWire capture failed: {e:#}"));
                 }
             })?;
@@ -174,6 +189,7 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
     Ok(Capture {
         frames: slot,
         input: Arc::new(std::sync::Mutex::new(Box::new(input))),
+        cursor: cursor_rx,
         stop: Some(Box::new(stop)),
     })
 }
@@ -288,6 +304,121 @@ struct StreamState {
     format: spa::param::video::VideoInfoRaw,
     slot: Arc<FrameSlot>,
     size: Arc<AtomicU64>,
+    cursor_tx: Option<mpsc::Sender<CursorUpdate>>,
+    cursor_visible: bool,
+}
+
+/// `spa_meta_cursor`, readable through `Buffer::find_meta`.
+#[repr(transparent)]
+struct CursorMeta(spa::sys::spa_meta_cursor);
+
+impl spa::buffer::meta::Metadata for CursorMeta {
+    const META_TYPE: u32 = spa::sys::SPA_META_Cursor;
+}
+
+/// Bytes of cursor metadata for a `w`x`h` RGBA cursor image.
+fn cursor_meta_size(w: i32, h: i32) -> i32 {
+    (std::mem::size_of::<spa::sys::spa_meta_cursor>()
+        + std::mem::size_of::<spa::sys::spa_meta_bitmap>()) as i32
+        + w * h * 4
+}
+
+/// Asks Mutter to attach pointer position and image to each buffer.
+fn cursor_meta_param() -> Result<Vec<u8>> {
+    use spa::pod::{ChoiceValue, Object, Property, PropertyFlags, Value as PodValue};
+    use spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Id, SpaTypes};
+    let obj = Object {
+        type_: SpaTypes::ObjectParamMeta.as_raw(),
+        id: spa::param::ParamType::Meta.as_raw(),
+        properties: vec![
+            Property {
+                key: spa::sys::SPA_PARAM_META_type,
+                flags: PropertyFlags::empty(),
+                value: PodValue::Id(Id(spa::sys::SPA_META_Cursor)),
+            },
+            Property {
+                key: spa::sys::SPA_PARAM_META_size,
+                flags: PropertyFlags::empty(),
+                value: PodValue::Choice(ChoiceValue::Int(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Range {
+                        default: cursor_meta_size(64, 64),
+                        min: cursor_meta_size(1, 1),
+                        max: cursor_meta_size(384, 384),
+                    },
+                ))),
+            },
+        ],
+    };
+    Ok(spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &PodValue::Object(obj),
+    )
+    .map_err(|e| anyhow!("serialize cursor meta pod: {e:?}"))?
+    .0
+    .into_inner())
+}
+
+/// Reads pointer metadata from a buffer. `None` means nothing changed.
+fn read_cursor(buffer: &pw::buffer::Buffer, state: &mut StreamState) -> Option<CursorUpdate> {
+    let meta = buffer.find_meta::<CursorMeta>()?;
+    let c = &meta.0;
+    if c.id == 0 {
+        return None;
+    }
+    let s = state.format.size();
+    if s.width == 0 || s.height == 0 {
+        return None;
+    }
+    let mut image = None;
+    let cursor_size = std::mem::size_of::<spa::sys::spa_meta_cursor>();
+    if c.bitmap_offset as usize >= cursor_size {
+        // SAFETY: Mutter guarantees a spa_meta_bitmap at bitmap_offset within
+        // the meta region we sized with cursor_meta_size().
+        unsafe {
+            let base = c as *const spa::sys::spa_meta_cursor as *const u8;
+            let bitmap_ptr = base.add(c.bitmap_offset as usize);
+            let bitmap = &*(bitmap_ptr as *const spa::sys::spa_meta_bitmap);
+            let (w, h) = (bitmap.size.width as usize, bitmap.size.height as usize);
+            if bitmap.offset == 0 || w == 0 || h == 0 {
+                state.cursor_visible = false;
+            } else if bitmap.format != 0 && w <= 384 && h <= 384 {
+                state.cursor_visible = true;
+                let stride = if bitmap.stride > 0 {
+                    bitmap.stride as usize
+                } else {
+                    w * 4
+                };
+                let pixels = bitmap_ptr.add(bitmap.offset as usize);
+                let swap_rb = bitmap.format == spa::param::video::VideoFormat::BGRA.as_raw()
+                    || bitmap.format == spa::param::video::VideoFormat::BGRx.as_raw();
+                let mut rgba = Vec::with_capacity(w * h * 4);
+                for row in 0..h {
+                    let line = std::slice::from_raw_parts(pixels.add(row * stride), w * 4);
+                    rgba.extend_from_slice(line);
+                }
+                if swap_rb {
+                    for px in rgba.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                image = Some(CursorImage {
+                    width: w as u32,
+                    height: h as u32,
+                    hot_x: c.hotspot.x.max(0) as u32,
+                    hot_y: c.hotspot.y.max(0) as u32,
+                    rgba,
+                });
+            }
+        }
+    }
+    Some(CursorUpdate {
+        x: c.position.x as f32 / s.width as f32,
+        y: c.position.y as f32 / s.height as f32,
+        visible: state.cursor_visible,
+        source_width: s.width,
+        image,
+    })
 }
 
 fn run_pipewire(
@@ -295,6 +426,7 @@ fn run_pipewire(
     want: Option<(u32, u32)>,
     slot: Arc<FrameSlot>,
     size: Arc<AtomicU64>,
+    cursor_tx: Option<mpsc::Sender<CursorUpdate>>,
     quit_rx: pw::channel::Receiver<()>,
 ) -> Result<()> {
     pw::init();
@@ -317,10 +449,13 @@ fn run_pipewire(
         },
     )?;
 
+    let cursor_param = cursor_meta_param()?;
     let state = StreamState {
         format: Default::default(),
         slot,
         size,
+        cursor_tx,
+        cursor_visible: true,
     };
     let _listener = stream
         .add_local_listener_with_user_data(state)
@@ -330,7 +465,7 @@ fn run_pipewire(
                 state.slot.fail(format!("PipeWire stream error: {e}"));
             }
         })
-        .param_changed(|_, state, id, param| {
+        .param_changed(move |stream, state, id, param| {
             let Some(param) = param else { return };
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
@@ -344,12 +479,26 @@ fn run_pipewire(
                     s.height
                 );
                 state.size.store(pack(s.width, s.height), Ordering::Relaxed);
+                if state.cursor_tx.is_some() {
+                    if let Some(pod) = spa::pod::Pod::from_bytes(&cursor_param) {
+                        if let Err(e) = stream.update_params(&mut [pod]) {
+                            log::warn!("cursor metadata unavailable: {e}");
+                        }
+                    }
+                }
             }
         })
         .process(|stream, state| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
+            if state.cursor_tx.is_some() {
+                if let Some(update) = read_cursor(&buffer, state) {
+                    if let Some(tx) = &state.cursor_tx {
+                        let _ = tx.send(update);
+                    }
+                }
+            }
             let datas = buffer.datas_mut();
             let Some(data) = datas.first_mut() else {
                 return;

@@ -6,7 +6,9 @@
 use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 4] = b"SMON";
-pub const VERSION: u8 = 1;
+/// v2 adds a flags byte to the client hello and cursor messages.
+pub const VERSION: u8 = 2;
+const MIN_VERSION: u8 = 1;
 pub const DEFAULT_PORT: u16 = 52020;
 pub const DISCOVERY_PORT: u16 = 52021;
 pub const DISCOVERY_QUERY: &[u8] = b"SMON_DISCOVER";
@@ -15,6 +17,10 @@ pub const CODEC_H264: u8 = 1;
 // Host -> client
 pub const MSG_VIDEO: u8 = 1;
 pub const MSG_RESIZE: u8 = 2;
+pub const MSG_CURSOR: u8 = 3;
+
+/// Client hello flag: the viewer draws the pointer itself (MSG_CURSOR).
+pub const FLAG_CURSOR_OVERLAY: u8 = 1;
 
 // Client -> host
 pub const MSG_TOUCH: u8 = 10;
@@ -25,9 +31,11 @@ const MAX_CLIENT_PAYLOAD: u32 = 64 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClientHello {
+    pub version: u8,
     pub width: u16,
     pub height: u16,
     pub dpi: u16,
+    pub flags: u8,
 }
 
 pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
@@ -36,23 +44,38 @@ pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
     if &buf[0..4] != MAGIC {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic"));
     }
-    if buf[4] != VERSION {
+    let version = buf[4];
+    if !(MIN_VERSION..=VERSION).contains(&version) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("unsupported protocol version {}", buf[4]),
+            format!("unsupported protocol version {version}"),
         ));
     }
+    let mut flags = 0;
+    if version >= 2 {
+        let mut b = [0u8; 1];
+        r.read_exact(&mut b)?;
+        flags = b[0];
+    }
     Ok(ClientHello {
+        version,
         width: u16::from_be_bytes([buf[5], buf[6]]),
         height: u16::from_be_bytes([buf[7], buf[8]]),
         dpi: u16::from_be_bytes([buf[9], buf[10]]),
+        flags,
     })
 }
 
-pub fn write_server_hello(w: &mut impl Write, width: u16, height: u16) -> io::Result<()> {
+/// `version` echoes the client's, so v1 viewers still accept the reply.
+pub fn write_server_hello(
+    w: &mut impl Write,
+    version: u8,
+    width: u16,
+    height: u16,
+) -> io::Result<()> {
     let mut buf = Vec::with_capacity(10);
     buf.extend_from_slice(MAGIC);
-    buf.push(VERSION);
+    buf.push(version);
     buf.extend_from_slice(&width.to_be_bytes());
     buf.extend_from_slice(&height.to_be_bytes());
     buf.push(CODEC_H264);
@@ -76,6 +99,26 @@ pub fn write_resize(w: &mut impl Write, width: u16, height: u16) -> io::Result<(
     buf[5..7].copy_from_slice(&width.to_be_bytes());
     buf[7..9].copy_from_slice(&height.to_be_bytes());
     w.write_all(&buf)
+}
+
+pub fn write_cursor(w: &mut impl Write, c: &crate::backend::CursorUpdate) -> io::Result<()> {
+    let mut payload = Vec::with_capacity(19);
+    let flags = (c.visible as u8) | ((c.image.is_some() as u8) << 1);
+    payload.push(flags);
+    payload.extend_from_slice(&c.x.to_be_bytes());
+    payload.extend_from_slice(&c.y.to_be_bytes());
+    payload.extend_from_slice(&(c.source_width.min(u16::MAX as u32) as u16).to_be_bytes());
+    if let Some(img) = &c.image {
+        for v in [img.width, img.height, img.hot_x, img.hot_y] {
+            payload.extend_from_slice(&(v.min(u16::MAX as u32) as u16).to_be_bytes());
+        }
+        payload.extend_from_slice(&img.rgba);
+    }
+    let mut header = [0u8; 5];
+    header[0] = MSG_CURSOR;
+    header[1..5].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+    w.write_all(&header)?;
+    w.write_all(&payload)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

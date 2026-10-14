@@ -41,5 +41,9 @@ pub fn resize(src: &Frame, dw: u32, dh: u32) -> Frame {
             }
         }
     });
-    Frame { width: dw as u32, height: dh as u32, bgra: out }
+    Frame {
+        width: dw as u32,
+        height: dh as u32,
+        bgra: out,
+    }
 }

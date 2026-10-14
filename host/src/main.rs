@@ -8,7 +8,7 @@ mod scale;
 use std::io::{BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -133,8 +133,9 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
         monitor: args.monitor.clone(),
         width: (((hello.width as f32 / scale) as u32).max(320)) & !1,
         height: (((hello.height as f32 / scale) as u32).max(240)) & !1,
+        cursor_overlay: hello.flags & protocol::FLAG_CURSOR_OVERLAY != 0,
     };
-    let capture = backend::start(&req)?;
+    let mut capture = backend::start(&req)?;
     let frames = capture.frames.clone();
     let input = capture.input.clone();
 
@@ -162,13 +163,25 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
             })?;
     }
 
-    let mut out = BufWriter::new(stream.try_clone()?);
+    // Shared by the video loop and the cursor thread.
+    let out = Arc::new(Mutex::new(BufWriter::new(stream.try_clone()?)));
+    let hello_sent = Arc::new(AtomicBool::new(false));
+    if let Some(cursor_rx) = capture.cursor.take() {
+        log::info!("pointer sent separately (drawn by the device)");
+        let out = out.clone();
+        let hello_sent = hello_sent.clone();
+        let closed = closed.clone();
+        thread::Builder::new()
+            .name("cursor".into())
+            .spawn(move || send_cursor_updates(cursor_rx, out, hello_sent, closed))?;
+    }
     let mut encoder: Option<H264Encoder> = None;
     let mut last: Option<Frame> = None;
     let started = Instant::now();
     let frame_interval = Duration::from_secs_f64(1.0 / args.fps.max(1) as f64);
     let mut next_due = Instant::now();
     let mut sent_hello = false;
+    let mut stats = Stats::default();
 
     while !closed.load(Ordering::Relaxed) {
         let force = keyframe.swap(false, Ordering::Relaxed);
@@ -187,6 +200,7 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
             },
             (None, false) => continue,
         };
+        let t_frame = Instant::now();
         // Never send more pixels than the viewer's decoder accepts.
         let (fw, fh) = scale::fit_size(
             frame.width,
@@ -209,22 +223,28 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
                 args.bitrate * 1_000_000,
             )?;
             let (w, h) = e.size();
+            let mut out = out.lock().unwrap();
             if sent_hello {
-                protocol::write_resize(&mut out, w as u16, h as u16)?;
+                protocol::write_resize(&mut *out, w as u16, h as u16)?;
             } else {
-                protocol::write_server_hello(&mut out, w as u16, h as u16)?;
+                protocol::write_server_hello(&mut *out, hello.version, w as u16, h as u16)?;
                 sent_hello = true;
+                hello_sent.store(true, Ordering::Relaxed);
             }
             log::info!("streaming {w}x{h}");
             encoder = Some(e);
         }
+        let t_encode = Instant::now();
         let enc = encoder.as_mut().unwrap();
         let data = enc.encode(&frame, force || rebuild)?;
+        let t_send = Instant::now();
         if !data.is_empty() {
             let pts = started.elapsed().as_micros() as u64;
-            protocol::write_video(&mut out, pts, &data)?;
+            let mut out = out.lock().unwrap();
+            protocol::write_video(&mut *out, pts, &data)?;
             out.flush()?;
         }
+        stats.add(t_frame, t_encode, t_send, data.len());
         last = Some(frame);
 
         // Pace to --fps; newer frames overwrite older ones meanwhile.
@@ -238,6 +258,95 @@ fn serve(stream: TcpStream, args: &Args) -> Result<()> {
     }
     drop(capture);
     Ok(())
+}
+
+/// Forwards pointer updates as soon as they arrive, merging any backlog so a
+/// slow link never queues up stale positions.
+fn send_cursor_updates(
+    rx: std::sync::mpsc::Receiver<backend::CursorUpdate>,
+    out: Arc<Mutex<BufWriter<TcpStream>>>,
+    hello_sent: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    // Keep a newer position but never lose an image that wasn't sent yet.
+    fn merge(pending: &mut Option<backend::CursorUpdate>, newer: backend::CursorUpdate) {
+        let image = newer
+            .image
+            .clone()
+            .or_else(|| pending.take().and_then(|p| p.image));
+        *pending = Some(backend::CursorUpdate { image, ..newer });
+    }
+    let mut pending: Option<backend::CursorUpdate> = None;
+    while !closed.load(Ordering::Relaxed) {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(newer) => {
+                merge(&mut pending, newer);
+                while let Ok(newer) = rx.try_recv() {
+                    merge(&mut pending, newer);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        flush_cursor(&mut pending, &out, &hello_sent, &closed);
+    }
+}
+
+fn flush_cursor(
+    pending: &mut Option<backend::CursorUpdate>,
+    out: &Mutex<BufWriter<TcpStream>>,
+    hello_sent: &AtomicBool,
+    closed: &AtomicBool,
+) {
+    // The viewer can't parse cursor messages before the video hello.
+    if pending.is_none() || !hello_sent.load(Ordering::Relaxed) {
+        return;
+    }
+    let update = pending.take().unwrap();
+    let mut out = out.lock().unwrap();
+    if protocol::write_cursor(&mut *out, &update)
+        .and_then(|_| out.flush())
+        .is_err()
+    {
+        closed.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Per-stage timings, logged every few seconds at debug level.
+#[derive(Default)]
+struct Stats {
+    since: Option<Instant>,
+    frames: u32,
+    bytes: usize,
+    scale: Duration,
+    encode: Duration,
+    send: Duration,
+}
+
+impl Stats {
+    fn add(&mut self, frame: Instant, encode: Instant, send: Instant, bytes: usize) {
+        let now = Instant::now();
+        let since = *self.since.get_or_insert(frame);
+        self.frames += 1;
+        self.bytes += bytes;
+        self.scale += encode - frame;
+        self.encode += send - encode;
+        self.send += now - send;
+        let elapsed = now - since;
+        if elapsed >= Duration::from_secs(3) {
+            let n = self.frames.max(1);
+            log::debug!(
+                "{:.1} fps, {:.1} Mbit/s, per frame: scale {:.1} ms, encode {:.1} ms, send {:.1} ms",
+                self.frames as f64 / elapsed.as_secs_f64(),
+                self.bytes as f64 * 8.0 / elapsed.as_secs_f64() / 1e6,
+                self.scale.as_secs_f64() * 1e3 / n as f64,
+                self.encode.as_secs_f64() * 1e3 / n as f64,
+                self.send.as_secs_f64() * 1e3 / n as f64,
+            );
+            *self = Stats::default();
+        }
+    }
 }
 
 #[cfg(windows)]

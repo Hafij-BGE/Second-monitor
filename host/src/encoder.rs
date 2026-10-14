@@ -25,7 +25,11 @@ impl H264Encoder {
             .rate_control_mode(RateControlMode::Bitrate)
             .bitrate(BitRate::from_bps(bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(fps as f32))
-            .skip_frames(false);
+            .skip_frames(false)
+            // OpenH264 only uses several cores when a frame is split into
+            // slices: about 3x faster on a 2304x1438 desktop with 6 threads.
+            .num_threads(encoder_threads())
+            .max_slice_len(60_000);
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .context("failed to create H.264 encoder")?;
         Ok(Self {
@@ -72,4 +76,9 @@ impl H264Encoder {
             .context("H.264 encode failed")?;
         Ok(bitstream.to_vec())
     }
+}
+
+fn encoder_threads() -> u16 {
+    let cpus = std::thread::available_parallelism().map_or(2, |n| n.get());
+    (cpus / 2).clamp(2, 8) as u16
 }

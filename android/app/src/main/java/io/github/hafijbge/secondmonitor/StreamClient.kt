@@ -1,5 +1,6 @@
 package io.github.hafijbge.secondmonitor
 
+import android.graphics.Bitmap
 import android.util.Log
 import android.view.Surface
 import java.io.BufferedInputStream
@@ -9,6 +10,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
@@ -29,6 +31,8 @@ class StreamClient(
     interface Listener {
         fun onVideoSize(width: Int, height: Int)
         fun onFirstFrame()
+        /** Pointer drawn by the app. [x]/[y] are 0..1 of the video; [image] only when it changed. */
+        fun onCursor(visible: Boolean, x: Float, y: Float, sourceWidth: Int, image: CursorImage?)
         fun onClosed(error: String?)
     }
 
@@ -112,6 +116,7 @@ class StreamClient(
         out.writeShort(screenWidth)
         out.writeShort(screenHeight)
         out.writeShort(dpi)
+        out.writeByte(Protocol.FLAG_CURSOR_OVERLAY)
         out.flush()
         output = out
 
@@ -143,9 +148,36 @@ class StreamClient(
                     decoder = null
                     setVideoSize(w, h)
                 }
+                Protocol.MSG_CURSOR -> readCursor(input, length)
                 else -> input.skipBytes(length)
             }
         }
+    }
+
+    private fun readCursor(input: DataInputStream, length: Int) {
+        val flags = input.readUnsignedByte()
+        val x = input.readFloat()
+        val y = input.readFloat()
+        val sourceWidth = input.readUnsignedShort()
+        var consumed = 11
+        var image: CursorImage? = null
+        if (flags and 2 != 0) {
+            val w = input.readUnsignedShort()
+            val h = input.readUnsignedShort()
+            val hotX = input.readUnsignedShort()
+            val hotY = input.readUnsignedShort()
+            val pixels = ByteArray(w * h * 4)
+            input.readFully(pixels)
+            consumed += 8 + pixels.size
+            if (w > 0 && h > 0) {
+                // Host sends premultiplied RGBA, which is ARGB_8888's memory layout.
+                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(pixels))
+                image = CursorImage(bitmap, hotX, hotY)
+            }
+        }
+        input.skipBytes(length - consumed)
+        listener.onCursor(flags and 1 != 0, x, y, sourceWidth, image)
     }
 
     private fun setVideoSize(w: Int, h: Int) {
@@ -193,3 +225,6 @@ class StreamClient(
         private const val TAG = "StreamClient"
     }
 }
+
+/** Pointer image with its hotspot, in host pixels. */
+class CursorImage(val bitmap: Bitmap, val hotX: Int, val hotY: Int)

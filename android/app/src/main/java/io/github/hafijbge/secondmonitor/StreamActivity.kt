@@ -17,12 +17,15 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
 
 class StreamActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener {
     private lateinit var root: FrameLayout
     private lateinit var surfaceView: SurfaceView
     private lateinit var status: TextView
+    private lateinit var cursorView: ImageView
+    private var cursorImage: CursorImage? = null
     private var client: StreamClient? = null
     private var videoWidth = 0
     private var videoHeight = 0
@@ -36,6 +39,14 @@ class StreamActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener
         root.addView(surfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.CENTER,
         ))
+        cursorView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_XY
+            visibility = View.GONE
+            // Let touches fall through to the video surface.
+            isClickable = false
+            isFocusable = false
+        }
+        root.addView(cursorView, FrameLayout.LayoutParams(1, 1, Gravity.TOP or Gravity.START))
         status = TextView(this).apply {
             setTextColor(Color.WHITE)
             textSize = 18f
@@ -124,6 +135,35 @@ class StreamActivity : Activity(), SurfaceHolder.Callback, StreamClient.Listener
 
     override fun onFirstFrame() {
         runOnUiThread { status.visibility = View.GONE }
+    }
+
+    override fun onCursor(visible: Boolean, x: Float, y: Float, sourceWidth: Int, image: CursorImage?) {
+        runOnUiThread {
+            if (image != null) {
+                cursorImage = image
+                cursorView.setImageBitmap(image.bitmap)
+            }
+            val img = cursorImage
+            val sw = surfaceView.width
+            val inside = x in 0f..1f && y in 0f..1f
+            if (img == null || !visible || !inside || sw == 0 || sourceWidth == 0) {
+                cursorView.visibility = View.GONE
+                return@runOnUiThread
+            }
+            // Same scale as the video, so the pointer matches the desktop.
+            val scale = sw.toFloat() / sourceWidth
+            val w = (img.bitmap.width * scale).toInt().coerceAtLeast(1)
+            val h = (img.bitmap.height * scale).toInt().coerceAtLeast(1)
+            val lp = cursorView.layoutParams
+            if (lp.width != w || lp.height != h) {
+                lp.width = w
+                lp.height = h
+                cursorView.layoutParams = lp
+            }
+            cursorView.translationX = surfaceView.left + x * sw - img.hotX * scale
+            cursorView.translationY = surfaceView.top + y * surfaceView.height - img.hotY * scale
+            cursorView.visibility = View.VISIBLE
+        }
     }
 
     override fun onClosed(error: String?) {
