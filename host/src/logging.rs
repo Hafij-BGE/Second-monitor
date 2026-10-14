@@ -13,7 +13,7 @@ struct Logger {
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-/// `RUST_LOG=debug` (or `second_monitor=debug`) shows timing stats.
+/// `RUST_LOG=debug` (or `extendo=debug`) shows timing stats.
 pub fn init() {
     let level = match std::env::var("RUST_LOG").unwrap_or_default() {
         s if s.contains("trace") => LevelFilter::Trace,
@@ -41,7 +41,7 @@ pub fn attach(shared: Arc<Shared>) {
 impl log::Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         // Dependencies (zbus, wgpu, ...) are chatty: only their warnings.
-        let limit = if metadata.target().starts_with("second_monitor") {
+        let limit = if metadata.target().starts_with("extendo") {
             self.level
         } else {
             self.level.min(LevelFilter::Warn)

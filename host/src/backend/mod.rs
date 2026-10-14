@@ -18,7 +18,7 @@ mod dxgi;
 use dxgi as platform;
 
 #[cfg(not(any(target_os = "linux", windows)))]
-compile_error!("second-monitor supports Linux (GNOME) and Windows hosts only");
+compile_error!("Extendo supports Linux (GNOME) and Windows hosts only");
 
 /// A captured frame, tightly packed BGRA (stride = width * 4).
 pub struct Frame {

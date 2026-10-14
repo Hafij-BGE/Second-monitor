@@ -16,14 +16,18 @@ use crate::state::{SessionCommand, Shared, TransferState};
 pub fn run(shared: Arc<Shared>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Second Monitor")
-            .with_app_id("second-monitor")
+            .with_title("Extendo")
+            .with_app_id("extendo")
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../../assets/extendo-256.png"))
+                    .unwrap_or_default(),
+            )
             .with_inner_size([580.0, 860.0])
             .with_min_inner_size([440.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "Second Monitor",
+        "Extendo",
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, shared)))),
     )
@@ -82,6 +86,7 @@ struct App {
     addresses_at: Instant,
     host_name: String,
     applied_dark: Option<bool>,
+    logo: Option<egui::TextureHandle>,
 }
 
 impl App {
@@ -95,6 +100,7 @@ impl App {
             addresses_at: Instant::now(),
             host_name: crate::discovery::host_name(),
             applied_dark: None,
+            logo: load_logo(&cc.egui_ctx),
         }
     }
 
@@ -189,14 +195,16 @@ impl App {
     fn header(&mut self, ui: &mut Ui) {
         let p = self.palette();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🖥").size(28.0).color(p.accent));
+            match &self.logo {
+                Some(logo) => {
+                    ui.add(egui::Image::new((logo.id(), Vec2::splat(44.0))).corner_radius(10));
+                }
+                None => {
+                    ui.label(RichText::new("🖥").size(28.0).color(p.accent));
+                }
+            }
             ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("Second Monitor")
-                        .size(22.0)
-                        .strong()
-                        .color(p.text),
-                );
+                ui.label(RichText::new("Extendo").size(22.0).strong().color(p.text));
                 ui.label(
                     RichText::new(format!("Host · {}", self.host_name))
                         .size(13.0)
@@ -271,7 +279,7 @@ impl App {
                     pill(ui, "○ Waiting for device", p.warn);
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new("Open Second Monitor on your tablet and tap Connect.")
+                        RichText::new("Open Extendo on your tablet and tap Connect.")
                             .size(15.0)
                             .color(p.text),
                     );
@@ -595,6 +603,26 @@ impl App {
         });
     }
 
+    fn footer(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        ui.add_space(16.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Extendo {} · Made by Md Hafijur Rahman",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .size(12.0)
+                .color(p.muted),
+            );
+            ui.hyperlink_to(
+                RichText::new("github.com/Hafij-BGE").size(12.0),
+                "https://github.com/Hafij-BGE",
+            );
+        });
+        ui.add_space(8.0);
+    }
+
     fn log_card(&mut self, ui: &mut Ui) {
         let p = self.palette();
         let lines: Vec<String> = self.shared.log.lock().unwrap().iter().cloned().collect();
@@ -662,6 +690,7 @@ impl eframe::App for App {
                         self.files_card(ui);
                         self.options_card(ui);
                         self.log_card(ui);
+                        self.footer(ui);
                     });
             });
         // Refresh stats even when no other event arrives.
@@ -724,6 +753,16 @@ fn stat(ui: &mut Ui, p: &Palette, value: &str, label: &str) {
                 ui.label(RichText::new(label).size(11.0).color(p.muted));
             });
         });
+}
+
+fn load_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../assets/extendo-256.png")).ok()?;
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width as usize, icon.height as usize],
+        &icon.rgba,
+    );
+    Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR))
 }
 
 fn monitor_choices() -> Vec<(String, String)> {

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Extendo
+GenericName=Second Monitor
+Comment=Use your Android tablet as a second monitor over USB or WiFi
+Exec=extendo
+Icon=extendo
+Terminal=false
+Categories=Utility;
+Keywords=display;monitor;tablet;android;screen;extend;
+StartupWMClass=extendo

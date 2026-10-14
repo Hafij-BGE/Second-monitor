@@ -27,7 +27,7 @@ pub fn start(shared: Arc<Shared>) {
         Err(e) => {
             let msg = if e.kind() == io::ErrorKind::AddrInUse {
                 format!(
-                    "TCP port {port} is busy. Second Monitor is probably already running \
+                    "TCP port {port} is busy. Extendo is probably already running \
                      (close the other window), or pick another port."
                 )
             } else {

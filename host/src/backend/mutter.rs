@@ -498,7 +498,7 @@ fn run_pipewire(
 
     let stream = pw::stream::StreamBox::new(
         &core,
-        "second-monitor",
+        "extendo",
         pw::properties::properties! {
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",

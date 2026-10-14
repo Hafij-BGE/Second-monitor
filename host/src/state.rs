@@ -52,11 +52,11 @@ fn default_save_dir() -> PathBuf {
     dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("Second Monitor")
+        .join("Extendo")
 }
 
 fn settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("second-monitor").join("settings.json"))
+    dirs::config_dir().map(|d| d.join("extendo").join("settings.json"))
 }
 
 impl Settings {

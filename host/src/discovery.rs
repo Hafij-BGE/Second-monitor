@@ -47,6 +47,6 @@ pub fn host_name() -> String {
                 .map(|s| s.trim().to_string())
         })
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "Second Monitor host".into())
+        .unwrap_or_else(|| "Extendo host".into())
         .replace(char::is_whitespace, "-")
 }

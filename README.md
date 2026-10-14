@@ -1,70 +1,58 @@
-# Second Monitor
+<p align="center"><img src="assets/extendo-256.png" width="128" alt="Extendo icon"></p>
 
-Use an Android phone or tablet as a second monitor for a Windows or Linux PC,
-over a **USB cable** or **WiFi**. Touches on the device control the PC.
+<h1 align="center">Extendo</h1>
 
-| Part | Package | Folder |
-|------|---------|--------|
-| Linux host (GNOME) | `.deb` | `host/` (Rust) |
-| Windows host | `.exe` installer + portable `.exe` | `host/` (Rust) |
-| Android viewer | `.apk` | `android/` (Kotlin) |
+<p align="center">Use your Android tablet as a second monitor for a Windows or Linux PC, over a USB cable or WiFi.</p>
 
-GitHub Actions builds all three on every push. Download them from the run's
-**Artifacts**, or push a tag like `v0.1.0` to publish a GitHub Release.
+<p align="center">Made by <b>Md Hafijur Rahman</b> · <a href="https://github.com/Hafij-BGE">github.com/Hafij-BGE</a></p>
 
-## How it works
+## Features
 
-1. The Android app connects to the host and sends its screen size.
-2. The host captures a monitor, encodes it to H.264 and streams it back.
-3. The phone decodes it with the hardware decoder and sends touches back.
+- **Extend or mirror.** On GNOME (Linux) Extendo creates a real virtual monitor sized for the tablet. On Windows it streams any monitor (use a virtual display driver to extend).
+- **USB or WiFi.** USB goes through `adb` for the lowest latency; on WiFi the app finds the PC automatically.
+- **Touchscreen or trackpad.** Touch the PC directly, or use the tablet as a trackpad: tap to click, two-finger tap to right-click, two-finger scroll, press and hold to drag. A stylus or mouse always points directly.
+- **Keyboard and shortcuts.** On-screen keyboard, hardware keyboards, and a sidebar with Ctrl / Alt / Shift / Super, Esc, Tab, undo, cut, copy and paste.
+- **Clipboard sync.** Copy on one device, paste on the other.
+- **File transfer.** Send files both ways: drop files on the PC window, use the sidebar, or "Share → Send to PC" from any Android app.
+- **Resolution, scale and quality.** Pick the resolution, make everything bigger, and choose Smooth, Low-latency or Sharp presets (or your own frame rate and bitrate).
+- **Smooth pointer.** The tablet draws the mouse pointer itself, so it moves without waiting for video.
+- **Auto-reconnect** and an optional performance overlay.
 
-- **Linux:** the host asks GNOME's Mutter for a real virtual monitor sized to
-  the phone (`RecordVirtual`), the same API gnome-remote-desktop uses. It
-  appears in Settings → Displays and can be arranged like a physical screen.
-  Touches go in as real touchscreen events. Needs GNOME 40+ (Wayland or X11).
-- **Windows:** Windows can't create monitors without a driver. Install
-  [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)
-  to get an extra screen; the host streams the first non-primary monitor. With
-  only one monitor it mirrors it. Touches move and click the mouse.
+## Downloads
 
-## Connect over USB
+| Part | File |
+|------|------|
+| Linux PC (GNOME) | `extendo_<version>_amd64.deb` |
+| Windows PC | `extendo-setup-<version>.exe` (installer) or `extendo-portable.exe` |
+| Android tablet | `extendo.apk` |
 
-1. On the phone: enable **Developer options → USB debugging**.
-2. Install `adb` on the PC:
-   - Linux: `sudo apt install adb`
-   - Windows: [Android platform-tools](https://developer.android.com/tools/releases/platform-tools);
-     put `adb.exe` next to `second-monitor.exe` or on `PATH`.
-3. Plug in the phone, accept the "Allow USB debugging" prompt.
-4. Start the host, then tap **Connect over USB** in the app.
+GitHub Actions builds all of them on every push; tags like `v0.2.0` publish a Release.
 
-The host runs `adb reverse tcp:52020 tcp:52020` for every attached device, so
-the app reaches the PC at `127.0.0.1` through the cable.
+## Getting started
 
-## Connect over WiFi
+1. Install Extendo on the PC and open it.
+2. Install `extendo.apk` on the tablet and open it.
+3. Connect:
+   - **USB:** turn on *Developer options → USB debugging* on the tablet, plug it in, accept the prompt, then tap **Connect over USB**. The PC needs `adb` (`sudo apt install adb`, or Android platform-tools on Windows next to `extendo.exe`).
+   - **WiFi:** put both on the same network and tap your PC in the list. The Windows installer opens the firewall; with `ufw` on Linux run `sudo ufw allow 52020/tcp && sudo ufw allow 52021/udp`.
 
-1. Put the phone and PC on the same network.
-2. Start the host. It answers discovery on UDP 52021 and streams on TCP 52020.
-   The Windows installer adds a firewall rule; on Linux with `ufw` run
-   `sudo ufw allow 52020/tcp && sudo ufw allow 52021/udp`.
-3. Tap **Search for computers** in the app, or type the PC's IP address.
+On Windows, install [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) to get an extra screen to extend onto.
 
-## Host options
+## PC app options
+
+The PC app opens a window. For a terminal-only setup:
 
 ```
-second-monitor [--mode extend|mirror] [--monitor NAME] [--list]
-               [--fps 60] [--bitrate 12] [--scale 1.0] [--port 52020]
-               [--no-usb] [--no-discovery]
+extendo --headless [--mode extend|mirror] [--monitor NAME] [--fps 60]
+                   [--bitrate 12] [--scale 1.5] [--port 52020] [--no-usb] [--no-discovery]
+extendo --list
 ```
 
-- `--scale 1.5` makes the virtual monitor smaller than the phone's resolution,
-  so text looks bigger on high-DPI phones.
-- `--mode mirror --monitor eDP-1` (Linux) or `--monitor 0` (Windows) shows an
-  existing screen. `--list` prints the names/indexes.
-- `RUST_LOG=debug second-monitor` prints more detail.
+Settings from the window are saved in `~/.config/extendo/settings.json` (Linux) or `%APPDATA%\extendo` (Windows). Received files go to `Downloads/Extendo`.
 
-## Build locally
+## Building
 
-Host on Linux:
+PC app on Linux:
 
 ```bash
 sudo apt install libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config nasm
@@ -73,17 +61,16 @@ cargo build --release
 cargo install cargo-deb && cargo deb
 ```
 
-Host on Windows: install Rust, then `cd host && cargo build --release`.
+Windows `.exe` from Linux: `sudo apt install gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64`, then `cargo build --release --target x86_64-pc-windows-gnu`. On Windows itself: `cargo build --release`.
 
-Android: JDK 17 + Android SDK, then `cd android && gradle assembleRelease`.
+Android: JDK 17 and the Android SDK, then `cd android && gradle assembleRelease`.
 
-### Signing the APK
+Without signing secrets, CI signs the APK with a throwaway key, so each build must be uninstalled before installing the next. For in-place updates add the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`.
 
-Without secrets, CI signs the APK with a throwaway debug key, so each build
-must be uninstalled before installing the next. For in-place updates, add these
-repository secrets: `ANDROID_KEYSTORE_BASE64` (base64 of a `.jks`),
-`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+## How it works
 
-## Protocol
+The PC captures the screen (GNOME's Mutter screencast API over PipeWire, or DXGI on Windows), encodes H.264 with OpenH264 using several threads, and streams it over TCP. The tablet decodes it with its hardware decoder. See [docs/protocol.md](docs/protocol.md).
 
-See [docs/protocol.md](docs/protocol.md).
+## Credits
+
+Extendo is designed and built by **Md Hafijur Rahman**.

@@ -220,6 +220,7 @@ pub enum MouseEvent {
     Scroll {
         dx: f32,
         dy: f32,
+        #[cfg_attr(windows, allow(dead_code))]
         finish: bool,
     },
 }

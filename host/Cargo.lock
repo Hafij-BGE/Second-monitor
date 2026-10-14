@@ -1232,6 +1232,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "extendo"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "clap",
+ "dirs",
+ "eframe",
+ "egui",
+ "if-addrs",
+ "log",
+ "openh264",
+ "pipewire",
+ "rayon",
+ "rfd",
+ "serde",
+ "serde_json",
+ "windows",
+ "winresource",
+ "zbus",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3134,28 +3157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "second-monitor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "clap",
- "dirs",
- "eframe",
- "egui",
- "if-addrs",
- "log",
- "openh264",
- "pipewire",
- "rayon",
- "rfd",
- "serde",
- "serde_json",
- "windows",
- "zbus",
-]
-
-[[package]]
 name = "self_cell"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4583,6 +4584,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "toml",
+ "version_check",
 ]
 
 [[package]]

@@ -33,7 +33,7 @@ jobs:
         run: cargo deb
       - uses: actions/upload-artifact@v4
         with:
-          name: second-monitor-deb
+          name: extendo-deb
           path: host/target/debian/*.deb
 
   windows-exe:
@@ -58,10 +58,10 @@ jobs:
             choco install innosetup -y --no-progress
           }
           & $iscc "/DAppVersion=$version" windows\installer.iss
-          Copy-Item target\release\second-monitor.exe target\installer\second-monitor-portable.exe
+          Copy-Item target\release\extendo.exe target\installer\extendo-portable.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: second-monitor-windows
+          name: extendo-windows
           path: host/target/installer/*.exe
 
   android-apk:
@@ -98,11 +98,11 @@ jobs:
             export SMON_VERSION_NAME="${GITHUB_REF_NAME#v}"
           fi
           gradle --no-daemon assembleRelease
-          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/second-monitor.apk
+          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/extendo.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: second-monitor-apk
-          path: android/app/build/outputs/apk/release/second-monitor.apk
+          name: extendo-apk
+          path: android/app/build/outputs/apk/release/extendo.apk
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
