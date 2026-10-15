@@ -35,8 +35,14 @@ pub fn detect(shared: Arc<Shared>) {
     });
 }
 
+/// The engine shipped with Extendo, or a system scrcpy as a fallback.
 fn find_scrcpy() -> Option<(PathBuf, String)> {
-    let exe = if cfg!(windows) {
+    let bundled = if cfg!(windows) {
+        "extendo-mirror.exe"
+    } else {
+        "extendo-mirror"
+    };
+    let system = if cfg!(windows) {
         "scrcpy.exe"
     } else {
         "scrcpy"
@@ -45,17 +51,19 @@ fn find_scrcpy() -> Option<(PathBuf, String)> {
     if let Some(p) = std::env::var_os("SMON_SCRCPY") {
         candidates.push(p.into());
     }
-    if let Ok(me) = std::env::current_exe() {
-        if let Some(dir) = me.parent() {
-            candidates.push(dir.join(exe));
-            candidates.push(dir.join("scrcpy").join(exe));
-        }
+    if let Some(dir) = exe_dir() {
+        // /usr/bin/extendo -> /usr/lib/extendo/; Windows: next to the .exe.
+        candidates.push(dir.join("../lib/extendo").join(bundled));
+        candidates.push(dir.join(bundled));
+        // Running from the source tree.
+        candidates.push(dir.join("../../packaging/mirror").join(bundled));
+        candidates.push(dir.join(system));
     }
-    // Distribution packages first: hand-built copies in /usr/local often break
-    // after ffmpeg upgrades.
-    candidates.push(PathBuf::from("/usr/bin").join(exe));
+    // Distribution packages before hand-built copies in /usr/local, which
+    // often break after ffmpeg upgrades.
+    candidates.push(PathBuf::from("/usr/bin").join(system));
     if let Some(path) = std::env::var_os("PATH") {
-        candidates.extend(std::env::split_paths(&path).map(|d| d.join(exe)));
+        candidates.extend(std::env::split_paths(&path).map(|d| d.join(system)));
     }
     candidates.dedup();
     candidates
@@ -64,7 +72,7 @@ fn find_scrcpy() -> Option<(PathBuf, String)> {
         .find_map(|p| {
             let out = quiet(Command::new(&p)).arg("--version").output().ok()?;
             if !out.status.success() {
-                log::debug!("ignoring broken scrcpy at {}", p.display());
+                log::debug!("ignoring broken mirror engine at {}", p.display());
                 return None;
             }
             let version = String::from_utf8_lossy(&out.stdout)
@@ -79,6 +87,22 @@ fn find_scrcpy() -> Option<(PathBuf, String)> {
                 .to_string();
             Some((p, version))
         })
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(PathBuf::from)
+}
+
+/// Extendo's icon for the mirror window.
+fn icon_path() -> Option<PathBuf> {
+    let dir = exe_dir()?;
+    [
+        dir.join("../share/icons/hicolor/256x256/apps/extendo.png"),
+        dir.join("extendo.png"),
+        dir.join("../../../assets/extendo-256.png"),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
 }
 
 fn quiet(mut cmd: Command) -> Command {
@@ -169,6 +193,20 @@ pub fn start(shared: Arc<Shared>, device: AdbDevice) {
     if let Some(adb) = shared.status().adb_path.clone() {
         cmd.env("ADB", adb);
     }
+    // The bundled engine keeps its phone-side server next to it.
+    if let Some(server) = scrcpy.parent().map(|d| d.join("scrcpy-server")) {
+        if server.is_file() {
+            cmd.env("SCRCPY_SERVER_PATH", server);
+        }
+    }
+    // Show the window as part of Extendo: its icon, and grouped with the
+    // Extendo app in the dock (matches StartupWMClass in extendo.desktop).
+    if let Some(icon) = icon_path() {
+        cmd.env("SCRCPY_ICON_PATH", icon);
+    }
+    cmd.env("SDL_VIDEO_WAYLAND_WMCLASS", "extendo")
+        .env("SDL_VIDEO_X11_WMCLASS", "extendo")
+        .env("SDL_APP_NAME", "Extendo Mirror");
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -226,6 +264,10 @@ pub fn start(shared: Arc<Shared>, device: AdbDevice) {
 pub fn stop(serial: &str) {
     if let Some(child) = sessions().lock().unwrap().get_mut(serial) {
         let _ = child.kill();
+    }
+    if let Some(mut shell) = shells().lock().unwrap().remove(serial) {
+        let _ = shell.kill();
+        let _ = shell.wait();
     }
 }
 
@@ -375,6 +417,111 @@ pub fn reconnect_saved(shared: Arc<Shared>) {
         }
         shared.changed();
     });
+}
+
+/// A button in the PC-side navigation bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhoneAction {
+    Back,
+    Home,
+    Recents,
+    VolumeUp,
+    VolumeDown,
+    Power,
+    Notifications,
+    Screenshot,
+}
+
+impl PhoneAction {
+    fn shell_command(self) -> &'static str {
+        match self {
+            PhoneAction::Back => "input keyevent 4",
+            PhoneAction::Home => "input keyevent 3",
+            PhoneAction::Recents => "input keyevent 187",
+            PhoneAction::VolumeUp => "input keyevent 24",
+            PhoneAction::VolumeDown => "input keyevent 25",
+            PhoneAction::Power => "input keyevent 26",
+            PhoneAction::Notifications => "cmd statusbar expand-notifications",
+            PhoneAction::Screenshot => "",
+        }
+    }
+}
+
+/// One long-lived `adb shell` per phone, so buttons don't wait for adb to
+/// start every time.
+fn shells() -> &'static Mutex<HashMap<String, Child>> {
+    static SHELLS: OnceLock<Mutex<HashMap<String, Child>>> = OnceLock::new();
+    SHELLS.get_or_init(Default::default)
+}
+
+/// Presses a phone button (Back, Home...) without touching the phone.
+pub fn phone_action(shared: Arc<Shared>, serial: String, action: PhoneAction) {
+    let Some(adb) = shared.status().adb_path.clone() else {
+        return;
+    };
+    if action == PhoneAction::Screenshot {
+        thread::spawn(move || screenshot(&shared, &adb, &serial));
+        return;
+    }
+    thread::spawn(move || {
+        use std::io::Write;
+        let line = format!("{}\n", action.shell_command());
+        let mut map = shells().lock().unwrap();
+        for attempt in 0..2 {
+            let alive = map
+                .get_mut(&serial)
+                .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if !alive || attempt == 1 {
+                let child = adb::command(&adb)
+                    .args(["-s", &serial, "shell"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .spawn();
+                match child {
+                    Ok(c) => {
+                        if let Some(mut old) = map.insert(serial.clone(), c) {
+                            let _ = old.kill();
+                            let _ = old.wait();
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("cannot reach the phone: {e}");
+                        return;
+                    }
+                }
+            }
+            let sent = map
+                .get_mut(&serial)
+                .and_then(|c| c.stdin.as_mut())
+                .map(|stdin| stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()));
+            if matches!(sent, Some(Ok(()))) {
+                return;
+            }
+        }
+        log::warn!("phone button failed");
+    });
+}
+
+/// Saves the phone's screen to Downloads/Extendo/Screenshots.
+fn screenshot(shared: &Shared, adb: &PathBuf, serial: &str) {
+    let dir = shared.settings().save_dir.join("Screenshots");
+    let _ = std::fs::create_dir_all(&dir);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("Phone {stamp}.png"));
+    let out = adb::command(adb)
+        .args(["-s", serial, "exec-out", "screencap", "-p"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() && o.stdout.starts_with(b"\x89PNG") => {
+            if std::fs::write(&path, &o.stdout).is_ok() {
+                log::info!("screenshot saved to {}", path.display());
+            }
+        }
+        _ => log::warn!("couldn't take a screenshot of the phone"),
+    }
 }
 
 /// Keyboard shortcuts in the mirror window, shown in the PC app.

@@ -56,7 +56,7 @@ maintainer = "Md Hafijur Rahman <mdhafijur.rahman@ogr.deu.edu.tr>"
 section = "video"
 priority = "optional"
 depends = "$auto"
-recommends = "adb, scrcpy"
+recommends = "adb"
 # Replaces the package from before the rename.
 conflicts = "second-monitor"
 replaces = "second-monitor"
@@ -70,4 +70,8 @@ assets = [
     ["../assets/extendo-256.png", "usr/share/icons/hicolor/256x256/apps/extendo.png", "644"],
     ["../assets/extendo-512.png", "usr/share/icons/hicolor/512x512/apps/extendo.png", "644"],
     ["../assets/extendo-icon.svg", "usr/share/icons/hicolor/scalable/apps/extendo.svg", "644"],
+    # Mirror engine (scrcpy, Apache-2.0); run packaging/bundle-mirror.sh first.
+    ["packaging/mirror/extendo-mirror", "usr/lib/extendo/", "755"],
+    ["packaging/mirror/scrcpy-server", "usr/lib/extendo/", "644"],
+    ["packaging/mirror/LICENSE-scrcpy", "usr/share/doc/extendo/", "644"],
 ]

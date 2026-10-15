@@ -21,7 +21,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config nasm
+          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config nasm scrcpy
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -29,6 +29,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb
+      - name: Bundle mirror engine
+        run: |
+          ./packaging/bundle-mirror.sh
       - name: Build .deb
         run: cargo deb
       - uses: actions/upload-artifact@v4
@@ -57,6 +60,10 @@ jobs:
           Expand-Archive scrcpy.zip -DestinationPath scrcpy-tmp
           New-Item -ItemType Directory -Force windows\scrcpy | Out-Null
           Copy-Item -Recurse scrcpy-tmp\scrcpy-win64-v$v\* windows\scrcpy\
+          # Branded as Extendo's mirror engine.
+          Move-Item windows\scrcpy\scrcpy.exe windows\scrcpy\extendo-mirror.exe -Force
+          Remove-Item windows\scrcpy\icon.png, windows\scrcpy\*.bat, windows\scrcpy\*.vbs -ErrorAction SilentlyContinue
+          Copy-Item ..\assets\extendo-256.png windows\scrcpy\extendo.png
       - name: Build installer
         shell: pwsh
         run: |

@@ -41,6 +41,14 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
                 }
                 let serials: Vec<String> = devices.into_iter().map(|d| d.serial).collect();
                 reversed.retain(|s| serials.contains(s));
+                // If the adb server restarted (another tool can do that), the
+                // tunnels are gone: check and set them up again.
+                let spec = format!("tcp:{port}");
+                reversed.retain(|s| {
+                    run(&adb, &["-s", s, "reverse", "--list"])
+                        .map(|list| list.contains(&spec))
+                        .unwrap_or(false)
+                });
                 for serial in serials {
                     if reversed.contains(&serial) {
                         continue;
