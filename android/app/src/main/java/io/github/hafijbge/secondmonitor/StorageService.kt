@@ -29,17 +29,19 @@ object StorageState {
 
     const val USER = "extendo"
 
-    private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-
     private fun prefs(context: Context) = context.getSharedPreferences("storage", Context.MODE_PRIVATE)
 
-    /** An 8-character password (no look-alike characters), kept until renewed. */
+    /**
+     * An 8-digit password, kept until renewed. Safe with the login lockout:
+     * 5 wrong tries lock logins for 5 minutes.
+     */
     fun password(context: Context): String =
-        prefs(context).getString("password", null)?.takeIf { it.length >= 8 } ?: newPassword(context)
+        prefs(context).getString("password", null)
+            ?.takeIf { it.length == 8 && it.all(Char::isDigit) } ?: newPassword(context)
 
     fun newPassword(context: Context): String {
         val random = java.security.SecureRandom()
-        val p = (1..8).map { ALPHABET[random.nextInt(ALPHABET.length)] }.joinToString("")
+        val p = (1..8).map { '0' + random.nextInt(10) }.joinToString("")
         prefs(context).edit().putString("password", p).apply()
         return p
     }

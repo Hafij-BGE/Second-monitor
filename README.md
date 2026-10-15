@@ -23,7 +23,7 @@
 - **Encrypted.** Everything between the tablet and the PC uses TLS.
 - **Pairing.** A new tablet on WiFi must be allowed on the PC, and both screens show the same 6-digit code (a different code means someone is intercepting). Trusted tablets are listed under *Screen → Security* and can be removed. USB connections are always allowed.
 - **USB only.** One switch closes the PC's network port completely.
-- **Phone storage** is off until you start it, uses an 8-character password, locks for 5 minutes after 5 wrong passwords, allows 4 connections at most, stops after 15 idle minutes, and can be limited to the USB cable. FTP itself is not encrypted, so use WiFi access only on networks you trust.
+- **Phone storage** is off until you start it, uses an 8-digit password, locks for 5 minutes after 5 wrong passwords, allows 4 connections at most, stops after 15 idle minutes, and can be limited to the USB cable. FTP itself is not encrypted, so use WiFi access only on networks you trust.
 - **Mirroring over WiFi** opens the phone's adb port; *Turn off WiFi* in the Mirror tab closes it again.
 
 ## Downloads
