@@ -64,6 +64,15 @@ fun StorageCard() {
     val running by StorageState.running
     val error by StorageState.error
     var password by remember { mutableStateOf(StorageState.password(context)) }
+    var wifiAccess by remember { mutableStateOf(StorageState.wifiAccess(context)) }
+    var autoStop by remember { mutableStateOf(StorageState.autoStop(context)) }
+
+    fun restartIfRunning() {
+        if (StorageState.running.value) {
+            StorageService.stop(context)
+            StorageService.start(context)
+        }
+    }
     var addresses by remember(running, tick) { mutableStateOf(StorageState.localAddresses()) }
 
     val legacyPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -119,9 +128,24 @@ fun StorageCard() {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(8.dp))
         }
+        StorageSwitch(
+            "Allow WiFi access",
+            if (wifiAccess) "Off = USB cable only (safest)" else "USB cable only: the WiFi port is closed",
+            wifiAccess,
+        ) {
+            wifiAccess = it
+            StorageState.setWifiAccess(context, it)
+            restartIfRunning()
+        }
+        StorageSwitch("Stop when unused", "Turn off after ${StorageState.IDLE_MINUTES} minutes without use", autoStop) {
+            autoStop = it
+            StorageState.setAutoStop(context, it)
+            restartIfRunning()
+        }
+        Spacer(Modifier.height(8.dp))
         if (!running) {
             Text(
-                "Turn on, then on the PC open Extendo → Phone storage. Only use it on networks you trust.",
+                "Turn on, then on the PC open Extendo → Storage. Files travel unencrypted on WiFi, so only use it on networks you trust.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -131,7 +155,11 @@ fun StorageCard() {
             Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh).padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            val urls = addresses.map { "ftp://$it:${FtpServer.PORT}" }.ifEmpty { listOf("Connect to WiFi, or use USB from the PC app") }
+            val urls = if (!wifiAccess) {
+                listOf("USB only: on the PC, Extendo → Storage → Open files")
+            } else {
+                addresses.map { "ftp://$it:${FtpServer.PORT}" }.ifEmpty { listOf("Connect to WiFi, or use USB from the PC app") }
+            }
             urls.forEach { CopyRow("Address", it) }
             CopyRow("User", StorageState.USER)
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -147,6 +175,17 @@ fun StorageCard() {
         FilledTonalButton(onClick = { addresses = StorageState.localAddresses() }, modifier = Modifier.fillMaxWidth()) {
             Text("Refresh address")
         }
+    }
+}
+
+@Composable
+private fun StorageSwitch(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

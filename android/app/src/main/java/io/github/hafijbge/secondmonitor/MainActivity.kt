@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
@@ -496,6 +497,25 @@ private fun SettingsScreen(settings: AppSettings, onBack: () -> Unit) {
                     SwitchRow("Sync clipboard", "Copy on one device, paste on the other", clipboard) { clipboard = it; settings.clipboardSync = it }
                     SwitchRow("Performance overlay", "Show frame rate and bandwidth", stats) { stats = it; settings.showStats = it }
                     SwitchRow("Reconnect automatically", "Retry if the connection drops", reconnect) { reconnect = it; settings.autoReconnect = it }
+                }
+
+                var trustedPcs by remember { mutableIntStateOf(TrustStore(context).count()) }
+                SectionCard(Icons.Default.Lock, "Security", "Connections are encrypted. New PCs on WiFi are confirmed with a code.") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (trustedPcs == 1) "1 trusted PC" else "$trustedPcs trusted PCs",
+                            Modifier.weight(1f),
+                        )
+                        FilledTonalButton(
+                            onClick = { TrustStore(context).forgetAll(); trustedPcs = 0 },
+                            enabled = trustedPcs > 0,
+                        ) { Text("Forget all") }
+                    }
+                    Text(
+                        "Forgetting makes every PC show its code again on the next WiFi connection.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
 
                 SectionCard(Icons.Default.Info, "About", "Extendo ${appVersion(context)}") {

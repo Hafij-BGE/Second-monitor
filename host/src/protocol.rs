@@ -6,10 +6,17 @@
 use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 4] = b"SMON";
-/// v2 added hello flags and cursor messages; v3 adds quality, device name,
-/// mouse/keyboard input, clipboard and file transfer.
-pub const VERSION: u8 = 3;
-const MIN_VERSION: u8 = 1;
+/// v2 added hello flags and cursor messages; v3 quality, device name,
+/// mouse/keyboard input, clipboard and files; v4 runs over TLS and adds a
+/// device id and pairing.
+pub const VERSION: u8 = 4;
+const MIN_VERSION: u8 = 4;
+
+/// Sent by the host after the client hello (v4).
+pub const AUTH_OK: u8 = 0;
+/// The PC is asking the user; another auth byte follows.
+pub const AUTH_PENDING: u8 = 1;
+pub const AUTH_DENIED: u8 = 2;
 pub const DEFAULT_PORT: u16 = 52020;
 pub const DISCOVERY_PORT: u16 = 52021;
 pub const DISCOVERY_QUERY: &[u8] = b"SMON_DISCOVER";
@@ -54,6 +61,8 @@ pub struct ClientHello {
     /// 0 = host default.
     pub bitrate_kbps: u32,
     pub name: String,
+    /// Random id the app generated once, hex encoded (v4).
+    pub device_id: String,
 }
 
 pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
@@ -75,6 +84,7 @@ pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
         fps: 0,
         bitrate_kbps: 0,
         name: String::new(),
+        device_id: String::new(),
     };
     if version >= 2 {
         hello.flags = read_u8(r)?;
@@ -88,6 +98,11 @@ pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
         let mut name = vec![0u8; len];
         r.read_exact(&mut name)?;
         hello.name = String::from_utf8_lossy(&name).into_owned();
+    }
+    if version >= 4 {
+        let mut id = [0u8; 16];
+        r.read_exact(&mut id)?;
+        hello.device_id = id.iter().map(|b| format!("{b:02x}")).collect();
     }
     Ok(hello)
 }
@@ -106,6 +121,11 @@ pub fn write_server_hello(
     buf.extend_from_slice(&height.to_be_bytes());
     buf.push(CODEC_H264);
     w.write_all(&buf)
+}
+
+pub fn write_auth(w: &mut impl Write, result: u8) -> io::Result<()> {
+    w.write_all(&[result])?;
+    w.flush()
 }
 
 fn write_message(w: &mut impl Write, kind: u8, payload: &[&[u8]]) -> io::Result<()> {

@@ -29,17 +29,30 @@ object StorageState {
 
     const val USER = "extendo"
 
-    /** A 6-digit password, kept until the user asks for a new one. */
-    fun password(context: Context): String {
-        val prefs = context.getSharedPreferences("storage", Context.MODE_PRIVATE)
-        return prefs.getString("password", null) ?: newPassword(context)
-    }
+    private const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+
+    private fun prefs(context: Context) = context.getSharedPreferences("storage", Context.MODE_PRIVATE)
+
+    /** An 8-character password (no look-alike characters), kept until renewed. */
+    fun password(context: Context): String =
+        prefs(context).getString("password", null)?.takeIf { it.length >= 8 } ?: newPassword(context)
 
     fun newPassword(context: Context): String {
-        val p = (100000 + java.security.SecureRandom().nextInt(900000)).toString()
-        context.getSharedPreferences("storage", Context.MODE_PRIVATE).edit().putString("password", p).apply()
+        val random = java.security.SecureRandom()
+        val p = (1..8).map { ALPHABET[random.nextInt(ALPHABET.length)] }.joinToString("")
+        prefs(context).edit().putString("password", p).apply()
         return p
     }
+
+    /** false = USB only: the server listens on localhost (adb forward). */
+    fun wifiAccess(context: Context) = prefs(context).getBoolean("wifi", true)
+    fun setWifiAccess(context: Context, on: Boolean) = prefs(context).edit().putBoolean("wifi", on).apply()
+
+    /** Stop after [IDLE_MINUTES] without use. */
+    fun autoStop(context: Context) = prefs(context).getBoolean("auto_stop", true)
+    fun setAutoStop(context: Context, on: Boolean) = prefs(context).edit().putBoolean("auto_stop", on).apply()
+
+    const val IDLE_MINUTES = 15
 
     fun localAddresses(): List<String> = runCatching {
         NetworkInterface.getNetworkInterfaces().toList()
@@ -72,7 +85,9 @@ class StorageService : Service() {
 
         @Suppress("DEPRECATION")
         val root = Environment.getExternalStorageDirectory()
-        val s = FtpServer(root, StorageState.USER, StorageState.password(this))
+        val wifi = StorageState.wifiAccess(this)
+        val bind = if (wifi) null else java.net.InetAddress.getLoopbackAddress()
+        val s = FtpServer(root, StorageState.USER, StorageState.password(this), bind)
         try {
             s.start()
         } catch (e: Exception) {
@@ -86,7 +101,8 @@ class StorageService : Service() {
         StorageState.addresses.value = StorageState.localAddresses()
         StorageState.running.value = true
         holdLocks()
-        answerDiscovery()
+        if (wifi) answerDiscovery()
+        if (StorageState.autoStop(this)) stopWhenIdle(s)
         return START_STICKY
     }
 
@@ -106,6 +122,22 @@ class StorageService : Service() {
         wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "extendo:storage").apply { acquire() }
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "extendo:storage").apply { acquire() }
+    }
+
+    private fun stopWhenIdle(s: FtpServer) {
+        thread(name = "storage-idle", isDaemon = true) {
+            val limit = StorageState.IDLE_MINUTES * 60_000L
+            while (server === s) {
+                Thread.sleep(30_000)
+                if (server !== s) break
+                if (s.activeSessions == 0 && System.currentTimeMillis() - s.lastActivity > limit) {
+                    Log.i(TAG, "no use for ${StorageState.IDLE_MINUTES} minutes; stopping")
+                    StorageState.error.value = "Stopped after ${StorageState.IDLE_MINUTES} minutes without use."
+                    stopSelf()
+                    break
+                }
+            }
+        }
     }
 
     /** Replies to the PC app's "SMON_FTP?" broadcast. */
@@ -143,7 +175,9 @@ class StorageService : Service() {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, StorageService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
-        val address = StorageState.localAddresses().firstOrNull()?.let { "ftp://$it:${FtpServer.PORT}" } ?: "USB only"
+        val address = StorageState.localAddresses().firstOrNull()
+            ?.takeIf { StorageState.wifiAccess(this) }
+            ?.let { "ftp://$it:${FtpServer.PORT}" } ?: "USB only"
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL)
         else @Suppress("DEPRECATION") Notification.Builder(this)
         val notification = builder

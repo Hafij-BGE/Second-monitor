@@ -78,12 +78,15 @@ pub fn list_devices(adb: &PathBuf) -> Vec<AdbDevice> {
                         .find_map(|p| p.strip_prefix("model:"))
                         .map(|m| m.replace('_', " "))
                         .unwrap_or_else(|| serial.to_string());
+                    // `adb connect` devices are named ip:port; wireless
+                    // debugging ones contain "_adb-tls-connect".
+                    let wifi = serial.contains(':') || serial.contains("adb-tls");
+                    let wifi_debugging = wifi || tcp_port_open(adb, serial);
                     devices.push(AdbDevice {
                         serial: serial.to_string(),
                         model,
-                        // `adb connect` devices are named ip:port; wireless
-                        // debugging ones contain "_adb-tls-connect".
-                        wifi: serial.contains(':') || serial.contains("adb-tls"),
+                        wifi,
+                        wifi_debugging,
                     });
                 }
                 "unauthorized" => {
@@ -96,6 +99,16 @@ pub fn list_devices(adb: &PathBuf) -> Vec<AdbDevice> {
         }
     }
     devices
+}
+
+/// True when `adb tcpip` left adbd listening on the network.
+fn tcp_port_open(adb: &PathBuf, serial: &str) -> bool {
+    run(
+        adb,
+        &["-s", serial, "shell", "getprop", "service.adb.tcp.port"],
+    )
+    .map(|p| p.trim().parse::<i32>().is_ok_and(|n| n > 0))
+    .unwrap_or(false)
 }
 
 /// Runs adb and returns stdout, or stderr as the error.

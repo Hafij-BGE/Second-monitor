@@ -118,11 +118,11 @@ fn phone_password(adb: &std::path::PathBuf, serial: &str) -> Option<String> {
     let at = out.find("Sharing phone storage")?;
     let rest = &out[at..];
     let p = rest.find("password ")? + "password ".len();
-    let digits: String = rest[p..]
+    let password: String = rest[p..]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_alphanumeric())
         .collect();
-    (digits.len() >= 4).then_some(digits)
+    (password.len() >= 6).then_some(password)
 }
 
 /// Opens `ftp://extendo@address/` in the file manager.

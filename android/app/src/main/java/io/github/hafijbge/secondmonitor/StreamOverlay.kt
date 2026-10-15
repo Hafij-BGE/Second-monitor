@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TouchApp
@@ -84,8 +85,10 @@ fun StreamOverlay(state: OverlayState, actions: OverlayActions) {
             )
         }
 
-        if (phase != Phase.STREAMING) {
-            StatusCard(state, actions, Modifier.align(Alignment.Center))
+        when (phase) {
+            Phase.STREAMING -> Unit
+            Phase.VERIFY, Phase.APPROVAL -> PairingCard(state, actions, Modifier.align(Alignment.Center))
+            else -> StatusCard(state, actions, Modifier.align(Alignment.Center))
         }
 
         // Edge handle that opens the toolbar.
@@ -145,6 +148,52 @@ private fun StatusCard(state: OverlayState, actions: OverlayActions, modifier: M
             }
             Spacer(Modifier.height(18.dp))
             OutlinedButton(onClick = actions::disconnect) { Text("Cancel") }
+        }
+    }
+}
+
+/** First connection to a PC over WiFi: compare codes on both screens. */
+@Composable
+private fun PairingCard(state: OverlayState, actions: OverlayActions, modifier: Modifier) {
+    val verify = state.phase.value == Phase.VERIFY
+    Surface(modifier.widthIn(max = 420.dp), color = Glass, shape = RoundedCornerShape(24.dp)) {
+        Column(Modifier.padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+            Spacer(Modifier.height(12.dp))
+            Text(
+                if (verify) "New PC: check the code" else "Allow this tablet on your PC",
+                style = MaterialTheme.typography.titleLarge,
+                color = Color.White,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (verify) {
+                    "Make sure the Extendo window on ${state.hostName.value} shows this code (Screen → Security)."
+                } else {
+                    "Your PC is asking whether to let this tablet connect. Check it shows the same code, then choose Always allow."
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFB0B3C6),
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                state.code.value.chunked(3).joinToString(" "),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 40.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(20.dp))
+            if (verify) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = actions::disconnect) { Text("Cancel") }
+                    androidx.compose.material3.Button(onClick = { state.verifyAnswer?.invoke(true) }) { Text("Codes match") }
+                }
+            } else {
+                CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = actions::disconnect) { Text("Cancel") }
+            }
         }
     }
 }

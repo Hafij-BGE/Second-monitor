@@ -162,7 +162,7 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
         if (state.phase.value != Phase.RECONNECTING) state.phase.value = Phase.CONNECTING
         client = StreamClient(
             host(), intent.getIntExtra(EXTRA_PORT, Protocol.DEFAULT_PORT),
-            surfaceView.holder.surface, request, files, this,
+            surfaceView.holder.surface, request, files, TrustStore(this), this,
         ).also {
             Session.client = it
             it.start()
@@ -214,8 +214,30 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
 
     // StreamClient.Listener (background threads)
 
+    override fun onVerifyPc(code: String, answer: (Boolean) -> Unit) {
+        runOnUiThread {
+            state.code.value = code
+            state.phase.value = Phase.VERIFY
+            state.verifyAnswer = { ok ->
+                state.verifyAnswer = null
+                state.phase.value = Phase.CONNECTING
+                answer(ok)
+            }
+        }
+    }
+
+    override fun onWaitingForApproval(code: String) {
+        runOnUiThread {
+            state.code.value = code
+            state.phase.value = Phase.APPROVAL
+        }
+    }
+
     override fun onConnected() {
-        runOnUiThread { state.error.value = null }
+        runOnUiThread {
+            state.error.value = null
+            if (state.phase.value == Phase.APPROVAL) state.phase.value = Phase.CONNECTING
+        }
     }
 
     override fun onVideoSize(width: Int, height: Int) {
@@ -390,6 +412,7 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
         }
 
         override fun disconnect() {
+            state.verifyAnswer?.invoke(false)
             this@StreamActivity.disconnect()
             goHome(null)
         }
@@ -403,7 +426,7 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
     }
 }
 
-enum class Phase { CONNECTING, STREAMING, RECONNECTING }
+enum class Phase { CONNECTING, VERIFY, APPROVAL, STREAMING, RECONNECTING }
 
 /** Observable state for the Compose overlay. */
 class OverlayState {
@@ -419,6 +442,9 @@ class OverlayState {
     val modifiers = mutableStateListOf<Int>()
     val transfers = mutableStateListOf<Transfer>()
     val message = mutableStateOf<String?>(null)
+    /** Pairing code shown while verifying a new PC. */
+    val code = mutableStateOf("")
+    var verifyAnswer: ((Boolean) -> Unit)? = null
 }
 
 interface OverlayActions {

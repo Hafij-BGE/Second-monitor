@@ -3,8 +3,11 @@ package io.github.hafijbge.secondmonitor
 /** Wire protocol shared with the host. See docs/protocol.md. All integers big-endian. */
 object Protocol {
     val MAGIC = byteArrayOf('S'.code.toByte(), 'M'.code.toByte(), 'O'.code.toByte(), 'N'.code.toByte())
-    /** v3: quality and name in the hello, mouse/keyboard, clipboard, files. */
-    const val VERSION = 3
+    /** v4: TLS, device id and pairing (v3 added quality, input, clipboard, files). */
+    const val VERSION = 4
+    const val AUTH_OK = 0
+    const val AUTH_PENDING = 1
+    const val AUTH_DENIED = 2
     const val FLAG_CURSOR_OVERLAY = 1
     const val FLAG_CLIPBOARD = 2
     const val DEFAULT_PORT = 52020

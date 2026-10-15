@@ -336,6 +336,28 @@ pub fn disconnect(shared: Arc<Shared>, address: String, forget: bool) {
     });
 }
 
+/// Puts adbd back into USB-only mode, closing its network port, and
+/// forgets the phone's WiFi address.
+pub fn disable_wifi(shared: Arc<Shared>, device: AdbDevice) {
+    let Some(adb) = shared.status().adb_path.clone() else {
+        return;
+    };
+    stop(&device.serial);
+    thread::spawn(move || {
+        match adb::run(&adb, &["-s", &device.serial, "usb"]) {
+            Ok(_) => log::info!("{}: WiFi debugging turned off", device.model),
+            Err(e) => log::warn!("{}: cannot turn off WiFi debugging: {e}", device.model),
+        }
+        if device.wifi {
+            let _ = adb::run(&adb, &["disconnect", &device.serial]);
+            let mut s = shared.settings.lock().unwrap();
+            s.wifi_phones.retain(|p| p != &device.serial);
+            s.save();
+        }
+        shared.changed();
+    });
+}
+
 /// Re-connects remembered WiFi phones at startup.
 pub fn reconnect_saved(shared: Arc<Shared>) {
     let phones = shared.settings().wifi_phones;

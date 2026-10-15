@@ -11,7 +11,7 @@ use egui::{
 
 use crate::backend::{self, Mode};
 use crate::files::human_size;
-use crate::state::{AdbDevice, SessionCommand, Shared, TransferState};
+use crate::state::{AdbDevice, PairingDecision, SessionCommand, Shared, TransferState};
 use crate::{mirror, storage};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -97,6 +97,8 @@ struct App {
     applied_dark: Option<bool>,
     logo: Option<egui::TextureHandle>,
     tab: Tab,
+    /// Device id of the pairing request we already raised the window for.
+    pairing_seen: Option<String>,
     /// Text fields.
     mirror_address: String,
     storage_address: String,
@@ -106,6 +108,9 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, shared: Arc<Shared>) -> Self {
         let ctx = cc.egui_ctx.clone();
         shared.set_repaint(move || ctx.request_repaint());
+        shared
+            .has_gui
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Self {
             shared,
             monitors: monitor_choices(),
@@ -123,6 +128,7 @@ impl App {
             },
             mirror_address: String::new(),
             storage_address: String::new(),
+            pairing_seen: None,
         }
     }
 
@@ -606,7 +612,10 @@ impl App {
             }
             let mut wifi = s.wifi;
             if ui
-                .checkbox(&mut wifi, "📶  Allow WiFi connections")
+                .checkbox(
+                    &mut wifi,
+                    "📶  Allow WiFi connections (off = USB only, port closed)",
+                )
                 .changed()
             {
                 app.update_setting(|s| s.wifi = wifi);
@@ -723,6 +732,17 @@ impl App {
                                 {
                                     mirror::start(app.shared.clone(), d.clone());
                                 }
+                                if d.wifi_debugging
+                                    && ui
+                                        .small_button("🔒 Turn off WiFi")
+                                        .on_hover_text(
+                                            "Close the phone's debugging port on the network (5555). \
+                                             Mirroring then needs the cable again.",
+                                        )
+                                        .clicked()
+                                {
+                                    mirror::disable_wifi(app.shared.clone(), d.clone());
+                                }
                                 if d.wifi {
                                     if ui.small_button("Forget").on_hover_text("Disconnect and remove").clicked() {
                                         mirror::disconnect(app.shared.clone(), d.serial.clone(), true);
@@ -730,7 +750,8 @@ impl App {
                                 } else if let Some(msg) = &busy {
                                     ui.spinner();
                                     ui.label(RichText::new(msg).size(12.0).color(p.muted));
-                                } else if ui
+                                } else if !d.wifi_debugging
+                                    && ui
                                     .small_button("📶 Use WiFi")
                                     .on_hover_text("Switch this phone to WiFi so you can unplug the cable")
                                     .clicked()
@@ -981,6 +1002,129 @@ impl App {
         });
     }
 
+    fn security_card(&mut self, ui: &mut Ui) {
+        let p = self.palette();
+        let status = self.shared.status().clone();
+        let settings = self.shared.settings();
+        self.card(ui, "SECURITY", |app, ui| {
+            ui.horizontal(|ui| {
+                pill(ui, "🔒 Encrypted", p.good);
+                ui.label(RichText::new("All connections use TLS.").color(p.muted));
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("This PC's code:").color(p.text));
+                ui.label(
+                    RichText::new(&status.pairing_code)
+                        .font(FontId::monospace(18.0))
+                        .strong()
+                        .color(p.accent),
+                );
+            });
+            ui.label(
+                RichText::new(
+                    "A new tablet on WiFi must be allowed here first, and shows this same code. \
+                     If the codes differ, someone may be intercepting: deny it.",
+                )
+                .size(12.0)
+                .color(p.muted),
+            );
+            ui.add_space(8.0);
+            ui.label(RichText::new("Trusted tablets").strong().color(p.text));
+            if settings.trusted_devices.is_empty() {
+                ui.label(
+                    RichText::new("None yet. USB connections are always allowed.")
+                        .size(12.0)
+                        .color(p.muted),
+                );
+            }
+            for d in &settings.trusted_devices {
+                ui.horizontal(|ui| {
+                    ui.label(format!("📱 {}", d.name));
+                    if ui.small_button("Remove").clicked() {
+                        let id = d.id.clone();
+                        app.update_setting(|s| s.trusted_devices.retain(|t| t.id != id));
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            let mut usb_only = !settings.wifi;
+            if ui
+                .checkbox(
+                    &mut usb_only,
+                    "USB only: close the network port (WiFi tablets can't connect)",
+                )
+                .changed()
+            {
+                app.update_setting(|s| s.wifi = !usb_only);
+            }
+        });
+    }
+
+    /// Asks whether a new WiFi tablet may connect.
+    fn pairing_dialog(&mut self, ctx: &egui::Context) {
+        let p = self.palette();
+        let status = self.shared.status().clone();
+        let Some(req) = status.pairing else {
+            self.pairing_seen = None;
+            return;
+        };
+        if self.pairing_seen.as_deref() != Some(&req.id) {
+            self.pairing_seen = Some(req.id.clone());
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Critical,
+            ));
+        }
+        egui::Modal::new(egui::Id::new("pairing")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.label(
+                RichText::new("Allow this tablet?")
+                    .size(20.0)
+                    .strong()
+                    .color(p.text),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!("📱 {}", req.name))
+                    .size(16.0)
+                    .color(p.text),
+            );
+            ui.label(RichText::new(format!("from {} over WiFi", req.address)).color(p.muted));
+            ui.add_space(10.0);
+            ui.label(RichText::new("Check the tablet shows this code:").color(p.text));
+            ui.label(
+                RichText::new(&status.pairing_code)
+                    .font(FontId::monospace(30.0))
+                    .strong()
+                    .color(p.accent),
+            );
+            ui.label(
+                RichText::new("If it doesn't match, choose Deny.")
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Deny").clicked() {
+                    self.shared.answer_pairing(PairingDecision::Deny);
+                }
+                if ui.button("Allow once").clicked() {
+                    self.shared.answer_pairing(PairingDecision::AllowOnce);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Always allow").color(Color32::WHITE))
+                            .fill(p.accent),
+                    )
+                    .clicked()
+                {
+                    self.shared.answer_pairing(PairingDecision::AlwaysAllow);
+                }
+            });
+        });
+    }
+
     fn footer(&mut self, ui: &mut Ui) {
         let p = self.palette();
         ui.add_space(16.0);
@@ -1069,6 +1213,7 @@ impl eframe::App for App {
                                 self.connect_card(ui);
                                 self.display_card(ui);
                                 self.files_card(ui);
+                                self.security_card(ui);
                                 self.options_card(ui);
                             }
                             Tab::Mirror => {
@@ -1082,6 +1227,7 @@ impl eframe::App for App {
                         self.footer(ui);
                     });
             });
+        self.pairing_dialog(&ctx);
         // Refresh stats even when no other event arrives.
         ctx.request_repaint_after(Duration::from_secs(1));
         debug_screenshot(&ctx);

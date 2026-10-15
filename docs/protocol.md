@@ -1,8 +1,22 @@
-# Extendo protocol v3
+# Extendo protocol v4
 
-The Android app is always the TCP client; the host listens on TCP 52020.
-All integers are big-endian. Floats are IEEE 754 `f32`. Hosts accept v1 and
-v2 clients and echo the client's version in their hello.
+The Android app is always the TCP client; the host listens on TCP 52020
+(only on localhost when the PC is set to "USB only"). All integers are
+big-endian. Floats are IEEE 754 `f32`.
+
+## Encryption and pairing
+
+Everything after the TCP connect runs inside TLS (1.2 or 1.3). The PC uses a
+long-lived self-signed certificate stored in its config folder. The app pins
+the certificate's SHA-256 fingerprint:
+
+- **Pairing code:** the first 4 bytes of the fingerprint, as a big-endian
+  number, modulo 1,000,000, shown as 6 digits on both screens.
+- **New PC over WiFi:** before sending anything, the app shows the code and
+  the user confirms it matches the PC. Over USB (`127.0.0.1`) the PC is
+  trusted automatically.
+- **New tablet over WiFi:** after the hello the PC asks its user (Deny /
+  Allow once / Always allow). USB is always allowed.
 
 ## Discovery (WiFi)
 
@@ -25,7 +39,7 @@ Client → host:
 | Field | Type | Notes |
 |-------|------|-------|
 | magic | 4 bytes | `SMON` |
-| version | u8 | `3` |
+| version | u8 | `4` |
 | width | u16 | requested size (fits the device's decoder), landscape |
 | height | u16 | |
 | dpi | u16 | |
@@ -34,6 +48,11 @@ Client → host:
 | bitrate | u32 | v3. kbit/s, 0 = host default |
 | name length | u8 | v3 |
 | name | bytes | v3. UTF-8 device name |
+| device id | 16 bytes | v4. random, generated once by the app |
+
+Host → client, auth (v4): one byte at a time. `0` accepted (the server hello
+follows), `1` waiting for the PC's user (another auth byte follows), `2`
+denied (the connection closes).
 
 Host → client (10 bytes):
 

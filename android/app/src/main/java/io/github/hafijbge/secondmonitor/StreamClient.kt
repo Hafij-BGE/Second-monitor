@@ -14,8 +14,12 @@ import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
 import kotlin.concurrent.thread
 
 /** What the client asks the host for. */
@@ -42,9 +46,17 @@ class StreamClient(
     private val surface: Surface,
     private val request: StreamRequest,
     private val files: FileStore,
+    private val trust: TrustStore,
     private val listener: Listener,
 ) {
     interface Listener {
+        /**
+         * First connection to this PC over WiFi: show [code] and ask the user
+         * whether the PC shows the same one. Call [answer] with the result.
+         */
+        fun onVerifyPc(code: String, answer: (Boolean) -> Unit)
+        /** The PC is asking its user to allow this tablet. */
+        fun onWaitingForApproval(code: String)
         fun onConnected()
         fun onVideoSize(width: Int, height: Int)
         fun onFirstFrame()
@@ -245,11 +257,42 @@ class StreamClient(
         }
     }
 
-    private fun run() {
-        val s = Socket()
+    /** TLS to the PC; returns the socket and the PC's pairing code. */
+    private fun secureConnect(): Pair<SSLSocket, String> {
+        val raw = Socket()
+        socket = raw
+        raw.tcpNoDelay = true
+        raw.connect(InetSocketAddress(host, port), 5000)
+        val tm = CapturingTrustManager()
+        val ctx = SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), null) }
+        val s = ctx.socketFactory.createSocket(raw, host, port, true) as SSLSocket
         socket = s
-        s.tcpNoDelay = true
-        s.connect(InetSocketAddress(host, port), 5000)
+        s.useClientMode = true
+        s.soTimeout = 15_000
+        s.startHandshake()
+        val cert = tm.certificate ?: throw IOException("the PC sent no certificate")
+        val fingerprint = sha256(cert.encoded)
+        val fp = fingerprint.toHex()
+        val code = pairingCode(fingerprint)
+        if (!trust.isTrusted(fp)) {
+            // A USB cable can't be intercepted; on WiFi the user compares codes.
+            val viaUsb = host == "127.0.0.1"
+            if (!viaUsb) {
+                val answer = CompletableFuture<Boolean>()
+                listener.onVerifyPc(code) { answer.complete(it) }
+                val ok = runCatching { answer.get(3, TimeUnit.MINUTES) }.getOrDefault(false)
+                if (!ok) throw IOException("cancelled: the PC's code wasn't confirmed")
+            }
+            pendingTrust = fp
+        }
+        return s to code
+    }
+
+    /** Fingerprint to remember once the PC accepts us. */
+    private var pendingTrust: String? = null
+
+    private fun run() {
+        val (s, code) = secureConnect()
         val out = DataOutputStream(BufferedOutputStream(s.getOutputStream(), 1 shl 16))
         val input = DataInputStream(BufferedInputStream(s.getInputStream(), 1 shl 16))
 
@@ -268,11 +311,23 @@ class StreamClient(
         out.writeInt(request.bitrateKbps)
         out.writeByte(name.size)
         out.write(name)
+        out.write(trust.deviceId())
         out.flush()
+
+        // The PC may ask its user first (new tablet on WiFi).
+        s.soTimeout = 0
+        while (true) {
+            when (input.readUnsignedByte()) {
+                Protocol.AUTH_OK -> break
+                Protocol.AUTH_PENDING -> listener.onWaitingForApproval(code)
+                else -> throw IOException("The PC didn't allow this tablet.")
+            }
+        }
+        pendingTrust?.let { trust.trust(it, host) }
 
         val magic = ByteArray(4)
         input.readFully(magic)
-        if (!magic.contentEquals(Protocol.MAGIC)) throw IOException("not an Extendo host")
+        if (!magic.contentEquals(Protocol.MAGIC)) throw IOException("not an Extendo PC")
         val version = input.readUnsignedByte()
         if (version != Protocol.VERSION) {
             throw IOException("The PC app is out of date (protocol v$version). Update Extendo on the PC.")

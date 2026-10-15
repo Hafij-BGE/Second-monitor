@@ -30,16 +30,40 @@ class FtpServer(
     private val root: File,
     private val user: String,
     private val password: String,
+    /** null = all networks; loopback = USB only (adb forward). */
+    private val bindAddress: InetAddress? = null,
     val port: Int = PORT,
 ) {
     private var server: ServerSocket? = null
     private val clients = Collections.synchronizedSet(mutableSetOf<Socket>())
     @Volatile private var running = false
 
+    /** Last command or transfer, for stopping when idle. */
+    @Volatile var lastActivity = System.currentTimeMillis()
+        private set
+    val activeSessions: Int get() = clients.size
+
+    // Failed logins across all connections; too many locks logins briefly.
+    private val failures = ArrayDeque<Long>()
+    @Volatile private var lockedUntil = 0L
+
+    private fun loginLocked(): Boolean = System.currentTimeMillis() < lockedUntil
+
+    private fun recordFailure() = synchronized(failures) {
+        val now = System.currentTimeMillis()
+        failures.addLast(now)
+        while (failures.isNotEmpty() && now - failures.first() > FAILURE_WINDOW_MS) failures.removeFirst()
+        if (failures.size >= MAX_FAILURES) {
+            lockedUntil = now + LOCKOUT_MS
+            failures.clear()
+            Log.w(TAG, "too many failed logins; locked for ${LOCKOUT_MS / 60000} minutes")
+        }
+    }
+
     fun start() {
         val s = ServerSocket()
         s.reuseAddress = true
-        s.bind(java.net.InetSocketAddress(port))
+        s.bind(java.net.InetSocketAddress(bindAddress, port))
         server = s
         running = true
         thread(name = "ftp-accept", isDaemon = true) {
@@ -48,6 +72,13 @@ class FtpServer(
                     s.accept()
                 } catch (e: IOException) {
                     break
+                }
+                if (clients.size >= MAX_SESSIONS) {
+                    runCatching {
+                        client.getOutputStream().write("421 Too many connections\r\n".toByteArray())
+                        client.close()
+                    }
+                    continue
                 }
                 clients.add(client)
                 thread(name = "ftp-session", isDaemon = true) {
@@ -96,6 +127,7 @@ class FtpServer(
                     reply("421 Idle timeout")
                     break
                 }
+                lastActivity = System.currentTimeMillis()
                 val verb = line.substringBefore(' ').uppercase(Locale.US)
                 val arg = line.substringAfter(' ', "").trim()
                 if (!handle(verb, arg)) break
@@ -115,12 +147,20 @@ class FtpServer(
                     userOk = arg == user
                     reply("331 Password required")
                 }
-                "PASS" -> if (userOk && arg == password) {
-                    loggedIn = true
-                    reply("230 Logged in")
-                } else {
-                    Thread.sleep(1000) // slow down guessing
-                    reply("530 Login incorrect")
+                "PASS" -> when {
+                    loginLocked() -> {
+                        reply("421 Too many failed logins. Try again in a few minutes.")
+                        return false
+                    }
+                    userOk && arg == password -> {
+                        loggedIn = true
+                        reply("230 Logged in")
+                    }
+                    else -> {
+                        recordFailure()
+                        Thread.sleep(1000) // slow down guessing
+                        reply("530 Login incorrect")
+                    }
                 }
                 "AUTH" -> reply("502 TLS not supported")
                 "SYST" -> reply("215 UNIX Type: L8")
@@ -275,6 +315,7 @@ class FtpServer(
             reply("150 Opening data connection")
             try {
                 p.accept().use { block(it) }
+                lastActivity = System.currentTimeMillis()
                 reply("226 Transfer complete")
             } catch (e: IOException) {
                 Log.d(TAG, "data transfer failed", e)
@@ -353,6 +394,10 @@ class FtpServer(
         /** Kept small and fixed so the PC can forward them all over USB. */
         val PASSIVE_PORTS = 2122..2129
         private const val BUFFER = 256 * 1024
+        private const val MAX_SESSIONS = 4
+        private const val MAX_FAILURES = 5
+        private const val FAILURE_WINDOW_MS = 10 * 60 * 1000L
+        private const val LOCKOUT_MS = 5 * 60 * 1000L
         private const val IDLE_TIMEOUT_MS = 10 * 60 * 1000
 
         private fun stamp(time: Long): String = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)

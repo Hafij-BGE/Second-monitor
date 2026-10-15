@@ -16,72 +16,104 @@ use crate::encoder::H264Encoder;
 use crate::files;
 use crate::protocol::{self, ClientMessage};
 use crate::scale;
-use crate::state::{SessionCommand, Shared, Viewer};
+use crate::state::{
+    PairingDecision, PairingRequest, SessionCommand, Shared, TrustedDevice, Viewer,
+};
+use crate::tls::{self, TlsWriter};
 use crate::{adb, discovery};
 
 /// Binds the port and serves viewers on a background thread.
 pub fn start(shared: Arc<Shared>) {
     let port = shared.settings().port;
-    let listener = match TcpListener::bind(("0.0.0.0", port)) {
-        Ok(l) => l,
+    let identity = match tls::load_identity() {
+        Ok(id) => Arc::new(id),
         Err(e) => {
-            let msg = if e.kind() == io::ErrorKind::AddrInUse {
-                format!(
-                    "TCP port {port} is busy. Extendo is probably already running \
-                     (close the other window), or pick another port."
-                )
-            } else {
-                format!("cannot listen on TCP port {port}: {e}")
-            };
+            let msg = format!("cannot set up encryption: {e:#}");
             log::error!("{msg}");
             shared.update_status(|s| s.server_error = Some(msg));
             return;
         }
     };
-    log::info!("waiting for the Android app on TCP port {port}");
+    shared.update_status(|s| s.pairing_code = identity.pairing_code());
     discovery::spawn(shared.clone(), port);
     adb::spawn(shared.clone(), port);
 
     thread::Builder::new()
         .name("server".into())
-        .spawn(move || {
-            // One viewer at a time; the next one waits in the accept backlog.
-            for conn in listener.incoming() {
-                let stream = match conn {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("accept failed: {e}");
-                        continue;
+        .spawn(move || serve_forever(shared, identity, port))
+        .expect("spawn server thread");
+}
+
+/// Listens on all interfaces, or only on localhost (USB) when WiFi is off,
+/// re-binding when that setting changes.
+fn serve_forever(shared: Arc<Shared>, identity: Arc<tls::Identity>, port: u16) {
+    let mut bound: Option<(bool, TcpListener)> = None;
+    loop {
+        let wifi = shared.settings().wifi;
+        if bound.as_ref().map(|(w, _)| *w) != Some(wifi) {
+            bound = None;
+            let addr = if wifi { "0.0.0.0" } else { "127.0.0.1" };
+            match TcpListener::bind((addr, port)).and_then(|l| l.set_nonblocking(true).map(|_| l)) {
+                Ok(l) => {
+                    shared.update_status(|s| s.server_error = None);
+                    if wifi {
+                        log::info!("waiting for the tablet on port {port} (USB and WiFi)");
+                    } else {
+                        log::info!("waiting for the tablet over USB only (WiFi port closed)");
                     }
-                };
-                let local = stream
-                    .peer_addr()
-                    .map(|a| a.ip().is_loopback())
-                    .unwrap_or(false);
-                if !local && !shared.settings().wifi {
-                    log::info!("refused a WiFi connection (WiFi is turned off in Options)");
+                    bound = Some((wifi, l));
+                }
+                Err(e) => {
+                    let msg = if e.kind() == io::ErrorKind::AddrInUse {
+                        format!(
+                            "TCP port {port} is busy. Extendo is probably already running \
+                             (close the other window), or pick another port."
+                        )
+                    } else {
+                        format!("cannot listen on TCP port {port}: {e}")
+                    };
+                    // Log once, not on every retry.
+                    if shared.status().server_error.as_deref() != Some(msg.as_str()) {
+                        log::error!("{msg}");
+                    }
+                    shared.update_status(|s| s.server_error = Some(msg));
+                    thread::sleep(Duration::from_secs(3));
                     continue;
                 }
-                let peer = stream
-                    .peer_addr()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default();
-                log::info!("viewer connected from {peer}");
-                match serve(stream, &shared) {
-                    Ok(()) => log::info!("viewer {peer} disconnected"),
-                    Err(e) => log::warn!("viewer {peer}: {e:#}"),
-                }
-                *shared.session.lock().unwrap() = None;
-                shared.update_status(|s| s.viewer = None);
             }
-        })
-        .expect("spawn server thread");
+        }
+        let (_, listener) = bound.as_ref().unwrap();
+        let stream = match listener.accept() {
+            Ok((s, _)) => s,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+            Err(e) => {
+                log::warn!("accept failed: {e}");
+                continue;
+            }
+        };
+        let _ = stream.set_nonblocking(false);
+        let peer = stream
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_default();
+        log::info!("connection from {peer}");
+        // One viewer at a time.
+        match serve(stream, &shared, &identity) {
+            Ok(()) => log::info!("viewer {peer} disconnected"),
+            Err(e) => log::warn!("viewer {peer}: {e:#}"),
+        }
+        *shared.session.lock().unwrap() = None;
+        shared.update_status(|s| s.viewer = None);
+    }
 }
 
 /// Writer shared by the video loop, cursor, clipboard and file threads.
 #[derive(Clone)]
 pub struct Out {
-    writer: Arc<Mutex<BufWriter<TcpStream>>>,
+    writer: Arc<Mutex<BufWriter<TlsWriter>>>,
     /// The viewer can't parse anything before the server hello.
     ready: Arc<AtomicBool>,
 }
@@ -89,7 +121,7 @@ pub struct Out {
 impl Out {
     pub fn send(
         &self,
-        f: impl FnOnce(&mut BufWriter<TcpStream>) -> io::Result<()>,
+        f: impl FnOnce(&mut BufWriter<TlsWriter>) -> io::Result<()>,
     ) -> io::Result<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !self.ready.load(Ordering::Acquire) {
@@ -111,18 +143,25 @@ impl Out {
     }
 }
 
-fn serve(stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
+fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let (tls_reader, mut tls_writer) = tls::accept(stream.try_clone()?, identity.config.clone())
+        .context("encryption handshake")?;
+    let mut reader = BufReader::new(tls_reader);
     let hello = protocol::read_client_hello(&mut reader).context("handshake")?;
-    stream.set_read_timeout(None)?;
-    let settings = shared.settings();
     let name = if hello.name.is_empty() {
         "Android device".to_string()
     } else {
         hello.name.clone()
     };
+    let usb = stream
+        .peer_addr()
+        .map(|a| a.ip().is_loopback())
+        .unwrap_or(false);
+    authorize(shared, &hello, &name, usb, &stream, &mut tls_writer)?;
+    stream.set_read_timeout(None)?;
+    let settings = shared.settings();
     log::info!(
         "{name}: screen {}x{} @ {} dpi, protocol v{}",
         hello.width,
@@ -156,10 +195,6 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
     let frames = capture.frames.clone();
     let input = capture.input.clone();
 
-    let usb = stream
-        .peer_addr()
-        .map(|a| a.ip().is_loopback())
-        .unwrap_or(false);
     shared.update_status(|s| {
         s.viewer = Some(Viewer {
             name: name.clone(),
@@ -173,7 +208,7 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
     });
 
     let out = Out {
-        writer: Arc::new(Mutex::new(BufWriter::new(stream.try_clone()?))),
+        writer: Arc::new(Mutex::new(BufWriter::with_capacity(64 * 1024, tls_writer))),
         ready: Arc::new(AtomicBool::new(false)),
     };
     let closed = Arc::new(AtomicBool::new(false));
@@ -266,6 +301,71 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
     closed.store(true, Ordering::Relaxed);
     drop(capture);
     result
+}
+
+/// USB is always allowed. Over WiFi the tablet must be trusted, or the
+/// user allows it in the window while both screens show the same code.
+fn authorize(
+    shared: &Shared,
+    hello: &protocol::ClientHello,
+    name: &str,
+    usb: bool,
+    stream: &TcpStream,
+    w: &mut TlsWriter,
+) -> Result<()> {
+    let trusted = shared
+        .settings()
+        .trusted_devices
+        .iter()
+        .any(|d| d.id == hello.device_id);
+    if usb || trusted {
+        protocol::write_auth(w, protocol::AUTH_OK)?;
+        return Ok(());
+    }
+    let address = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    if !shared.has_gui.load(Ordering::Relaxed) {
+        protocol::write_auth(w, protocol::AUTH_DENIED)?;
+        anyhow::bail!("{name} ({address}) isn't paired; open the Extendo window to allow it");
+    }
+    log::info!("{name} ({address}) wants to connect; waiting for you to allow it");
+    protocol::write_auth(w, protocol::AUTH_PENDING)?;
+    let (tx, rx) = mpsc::channel();
+    *shared.pairing_reply.lock().unwrap() = Some(tx);
+    shared.update_status(|s| {
+        s.pairing = Some(PairingRequest {
+            id: hello.device_id.clone(),
+            name: name.to_string(),
+            address: address.clone(),
+        })
+    });
+    let decision = rx
+        .recv_timeout(Duration::from_secs(120))
+        .unwrap_or(PairingDecision::Deny);
+    shared.update_status(|s| s.pairing = None);
+    *shared.pairing_reply.lock().unwrap() = None;
+    match decision {
+        PairingDecision::Deny => {
+            let _ = protocol::write_auth(w, protocol::AUTH_DENIED);
+            anyhow::bail!("{name} ({address}) was not allowed");
+        }
+        PairingDecision::AlwaysAllow => {
+            let mut s = shared.settings.lock().unwrap();
+            if !s.trusted_devices.iter().any(|d| d.id == hello.device_id) {
+                s.trusted_devices.push(TrustedDevice {
+                    id: hello.device_id.clone(),
+                    name: name.to_string(),
+                });
+                s.save();
+            }
+            log::info!("{name} is now trusted");
+        }
+        PairingDecision::AllowOnce => log::info!("{name} allowed for this connection"),
+    }
+    protocol::write_auth(w, protocol::AUTH_OK)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

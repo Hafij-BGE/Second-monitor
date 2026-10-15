@@ -16,6 +16,7 @@ mod scale;
 mod server;
 mod state;
 mod storage;
+mod tls;
 
 use anyhow::Result;
 use clap::Parser;

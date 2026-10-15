@@ -33,6 +33,14 @@ pub struct Settings {
     pub wifi_phones: Vec<String>,
     /// Last address typed for phone storage over WiFi.
     pub storage_address: String,
+    /// Tablets allowed to connect over WiFi without asking.
+    pub trusted_devices: Vec<TrustedDevice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrustedDevice {
+    pub id: String,
+    pub name: String,
 }
 
 /// Options for Extendo Mirror (scrcpy).
@@ -94,6 +102,7 @@ impl Default for Settings {
             mirror: MirrorSettings::default(),
             wifi_phones: Vec::new(),
             storage_address: String::new(),
+            trusted_devices: Vec::new(),
         }
     }
 }
@@ -170,6 +179,8 @@ pub struct AdbDevice {
     pub serial: String,
     pub model: String,
     pub wifi: bool,
+    /// adb is listening on the network (port 5555), even if on USB now.
+    pub wifi_debugging: bool,
 }
 
 /// A phone running the Extendo storage server, found on WiFi.
@@ -195,8 +206,26 @@ pub struct Status {
     pub mirror_busy: Vec<(String, String)>,
     pub storage_phones: Vec<StoragePhone>,
     pub storage_searching: bool,
+    /// A tablet waiting for the user to allow it.
+    pub pairing: Option<PairingRequest>,
+    /// Code shown while pairing; the tablet shows the same one.
+    pub pairing_code: String,
     pub viewer: Option<Viewer>,
     pub transfers: Vec<Transfer>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PairingRequest {
+    pub id: String,
+    pub name: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingDecision {
+    Deny,
+    AllowOnce,
+    AlwaysAllow,
 }
 
 /// Commands from the GUI to the connected viewer's session.
@@ -211,6 +240,10 @@ pub struct Shared {
     pub status: Mutex<Status>,
     pub log: Mutex<VecDeque<String>>,
     pub session: Mutex<Option<Sender<SessionCommand>>>,
+    /// Answer channel for the pairing request in `Status::pairing`.
+    pub pairing_reply: Mutex<Option<Sender<PairingDecision>>>,
+    /// Set when a window can show pairing requests.
+    pub has_gui: std::sync::atomic::AtomicBool,
     repaint: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 
@@ -264,6 +297,14 @@ impl Shared {
             Some(tx) => tx.send(cmd).is_ok(),
             None => false,
         }
+    }
+
+    /// Answers the pending pairing request.
+    pub fn answer_pairing(&self, decision: PairingDecision) {
+        if let Some(tx) = self.pairing_reply.lock().unwrap().take() {
+            let _ = tx.send(decision);
+        }
+        self.update_status(|s| s.pairing = None);
     }
 
     pub fn push_log(&self, line: String) {
