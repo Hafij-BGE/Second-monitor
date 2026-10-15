@@ -84,7 +84,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut settings = Settings::load();
+    let disk = Settings::load();
+    let mut settings = disk.clone();
     if let Some(v) = args.port {
         settings.port = v;
     }
@@ -108,6 +109,17 @@ fn main() -> Result<()> {
     }
     if args.no_discovery {
         settings.wifi = false;
+    }
+    let overridden = args.port.is_some()
+        || args.mode.is_some()
+        || args.monitor.is_some()
+        || args.fps.is_some()
+        || args.bitrate.is_some()
+        || args.scale.is_some()
+        || args.no_usb
+        || args.no_discovery;
+    if overridden {
+        settings.on_disk = Some(Box::new(disk));
     }
 
     let shared = Shared::new(settings);

@@ -35,6 +35,10 @@ pub struct Settings {
     pub storage_address: String,
     /// Tablets allowed to connect over WiFi without asking.
     pub trusted_devices: Vec<TrustedDevice>,
+    /// Settings as on disk before command-line options changed them for
+    /// this run; those options are never saved.
+    #[serde(skip)]
+    pub on_disk: Option<Box<Settings>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -103,6 +107,7 @@ impl Default for Settings {
             wifi_phones: Vec::new(),
             storage_address: String::new(),
             trusted_devices: Vec::new(),
+            on_disk: None,
         }
     }
 }
@@ -128,10 +133,22 @@ impl Settings {
 
     pub fn save(&self) {
         let Some(path) = settings_path() else { return };
+        // Keep the saved values of anything overridden on the command line.
+        let mut out = self.clone();
+        if let Some(base) = &self.on_disk {
+            out.port = base.port;
+            out.mode = base.mode;
+            out.monitor = base.monitor.clone();
+            out.fps = base.fps;
+            out.bitrate_mbps = base.bitrate_mbps;
+            out.scale = base.scale;
+            out.usb = base.usb;
+            out.wifi = base.wifi;
+        }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match serde_json::to_string_pretty(self) {
+        match serde_json::to_string_pretty(&out) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {
                     log::warn!("cannot save settings to {}: {e}", path.display());
