@@ -21,7 +21,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config nasm scrcpy
+          sudo apt-get install -y libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang pkg-config nasm meson ninja-build libsdl2-dev libavcodec-dev libavdevice-dev libavformat-dev libavutil-dev libswresample-dev libusb-1.0-0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

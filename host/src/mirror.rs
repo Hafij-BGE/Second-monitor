@@ -204,6 +204,11 @@ pub fn start(shared: Arc<Shared>, device: AdbDevice) {
     if let Some(icon) = icon_path() {
         cmd.env("SCRCPY_ICON_PATH", icon);
     }
+    // The patched engine draws Back / Home / Recents under the phone.
+    cmd.env(
+        "EXTENDO_NAVBAR",
+        if settings.mirror.navbar { "1" } else { "0" },
+    );
     cmd.env("SDL_VIDEO_WAYLAND_WMCLASS", "extendo")
         .env("SDL_VIDEO_X11_WMCLASS", "extendo")
         .env("SDL_APP_NAME", "Extendo Mirror");

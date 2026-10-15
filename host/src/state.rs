@@ -67,6 +67,8 @@ pub struct MirrorSettings {
     pub power_off_on_close: bool,
     pub record: bool,
     pub camera: bool,
+    /// Back / Home / Recents bar drawn under the phone in the mirror window.
+    pub navbar: bool,
 }
 
 impl Default for MirrorSettings {
@@ -85,6 +87,7 @@ impl Default for MirrorSettings {
             power_off_on_close: false,
             record: false,
             camera: false,
+            navbar: true,
         }
     }
 }

@@ -1,0 +1,380 @@
+diff -ruN a/app/src/display.c b/app/src/display.c
+--- a/app/src/display.c	2025-12-17 22:21:05.000000000 +0300
++++ b/app/src/display.c	2026-10-15 05:13:53.459920337 +0300
+@@ -298,9 +298,71 @@
+     return SC_DISPLAY_RESULT_OK;
+ }
+ 
++// Extendo: thick line for the navigation icons
++static void
++navbar_line(SDL_Renderer *r, int x1, int y1, int x2, int y2, int t) {
++    for (int d = -t / 2; d <= t / 2; ++d) {
++        SDL_RenderDrawLine(r, x1 + d, y1, x2 + d, y2);
++        SDL_RenderDrawLine(r, x1, y1 + d, x2, y2 + d);
++    }
++}
++
++static void
++navbar_draw(SDL_Renderer *r, const struct sc_navbar *nav) {
++    const SDL_Rect *b = &nav->rect;
++    Uint8 cr, cg, cb, ca;
++    SDL_GetRenderDrawColor(r, &cr, &cg, &cb, &ca);
++
++    SDL_SetRenderDrawColor(r, 0x14, 0x15, 0x1d, 0xff);
++    SDL_RenderFillRect(r, b);
++    SDL_SetRenderDrawColor(r, 0x2a, 0x2d, 0x3a, 0xff);
++    SDL_RenderDrawLine(r, b->x, b->y, b->x + b->w, b->y);
++
++    int third = b->w / 3;
++    if (nav->pressed >= 0 && nav->pressed <= 2) {
++        SDL_Rect hl = {b->x + nav->pressed * third, b->y + 1, third, b->h - 1};
++        SDL_SetRenderDrawColor(r, 0x2c, 0x30, 0x48, 0xff);
++        SDL_RenderFillRect(r, &hl);
++    }
++
++    int s = b->h * 36 / 100;           // icon size
++    int t = b->h >= 60 ? 4 : 3;        // stroke width
++    int cy = b->y + b->h / 2;
++    SDL_SetRenderDrawColor(r, 0xe4, 0xe6, 0xf0, 0xff);
++
++    // Back: left-pointing triangle
++    int cx = b->x + third / 2;
++    int h = s / 2;
++    navbar_line(r, cx + h, cy - h, cx - h, cy, t);
++    navbar_line(r, cx - h, cy, cx + h, cy + h, t);
++    navbar_line(r, cx + h, cy + h, cx + h, cy - h, t);
++
++    // Home: circle
++    cx = b->x + third + third / 2;
++    for (int deg = 0; deg < 360; ++deg) {
++        double a = deg * 3.14159265358979 / 180.0;
++        for (int k = -t / 2; k <= t / 2; ++k) {
++            double rr = h + k * 0.7;
++            SDL_RenderDrawPoint(r, cx + (int) (rr * SDL_cos(a)),
++                                   cy + (int) (rr * SDL_sin(a)));
++        }
++    }
++
++    // Recents: square
++    cx = b->x + 2 * third + third / 2;
++    int q = h * 85 / 100;
++    for (int k = 0; k < t; ++k) {
++        SDL_Rect sq = {cx - q + k, cy - q + k, 2 * (q - k), 2 * (q - k)};
++        SDL_RenderDrawRect(r, &sq);
++    }
++
++    SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
++}
++
+ enum sc_display_result
+ sc_display_render(struct sc_display *display, const SDL_Rect *geometry,
+-                  enum sc_orientation orientation) {
++                  enum sc_orientation orientation,
++                  const struct sc_navbar *navbar) {
+     SDL_RenderClear(display->renderer);
+ 
+     if (display->pending.flags) {
+@@ -346,6 +408,10 @@
+         }
+     }
+ 
++    if (navbar && navbar->rect.w > 0 && navbar->rect.h > 0) {
++        navbar_draw(display->renderer, navbar);
++    }
++
+     SDL_RenderPresent(display->renderer);
+     return SC_DISPLAY_RESULT_OK;
+ }
+diff -ruN a/app/src/display.h b/app/src/display.h
+--- a/app/src/display.h	2025-12-17 22:21:05.000000000 +0300
++++ b/app/src/display.h	2026-10-15 05:13:53.459807004 +0300
+@@ -57,8 +57,15 @@
+ enum sc_display_result
+ sc_display_update_texture(struct sc_display *display, const AVFrame *frame);
+ 
++// Extendo: navigation bar drawn under the video (Back, Home, Recents)
++struct sc_navbar {
++    SDL_Rect rect; // in drawable pixels; w == 0 means no bar
++    int pressed;   // -1, or 0 (back), 1 (home), 2 (recents)
++};
++
+ enum sc_display_result
+ sc_display_render(struct sc_display *display, const SDL_Rect *geometry,
+-                  enum sc_orientation orientation);
++                  enum sc_orientation orientation,
++                  const struct sc_navbar *navbar);
+ 
+ #endif
+diff -ruN a/app/src/input_manager.c b/app/src/input_manager.c
+--- a/app/src/input_manager.c	2025-12-17 22:21:05.000000000 +0300
++++ b/app/src/input_manager.c	2026-10-15 05:14:12.916937109 +0300
+@@ -629,6 +629,49 @@
+     };
+ }
+ 
++// Extendo: presses or releases a navigation bar button
++static void
++navbar_press(struct sc_input_manager *im, int button, bool down) {
++    enum sc_action action = down ? SC_ACTION_DOWN : SC_ACTION_UP;
++    switch (button) {
++        case 0:
++            action_back(im, action);
++            break;
++        case 1:
++            action_home(im, action);
++            break;
++        case 2:
++            action_app_switch(im, action);
++            break;
++        default:
++            return;
++    }
++    im->screen->navbar.pressed = down ? button : -1;
++    sc_screen_redraw(im->screen);
++}
++
++// Extendo: handles a press/release at window (x, y) if it is on the bar.
++// Returns true if consumed.
++static bool
++navbar_handle(struct sc_input_manager *im, int32_t x, int32_t y, bool down) {
++    if (!im->controller || !im->kp || im->screen->paused) {
++        return false;
++    }
++    int pressed = im->screen->navbar.pressed;
++    if (!down && pressed >= 0) {
++        navbar_press(im, pressed, false);
++        return true;
++    }
++    if (down) {
++        int hit = sc_screen_navbar_hit(im->screen, x, y);
++        if (hit >= 0) {
++            navbar_press(im, hit, true);
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void
+ sc_input_manager_process_mouse_motion(struct sc_input_manager *im,
+                                       const SDL_MouseMotionEvent *event) {
+@@ -636,6 +679,10 @@
+         // simulated from touch events, so it's a duplicate
+         return;
+     }
++    if (im->screen->navbar.pressed >= 0) {
++        // dragging from a navigation button: not for the device
++        return;
++    }
+ 
+     struct sc_mouse_motion_event evt = {
+         .position = sc_input_manager_get_position(im, event->x, event->y),
+@@ -672,6 +719,19 @@
+         return;
+     }
+ 
++    // Extendo: taps on the navigation bar
++    if (event->type != SDL_FINGERMOTION) {
++        int ww;
++        int wh;
++        SDL_GetWindowSize(im->screen->window, &ww, &wh);
++        if (navbar_handle(im, event->x * ww, event->y * wh,
++                          event->type == SDL_FINGERDOWN)) {
++            return;
++        }
++    } else if (im->screen->navbar.pressed >= 0) {
++        return;
++    }
++
+     int dw;
+     int dh;
+     SDL_GL_GetDrawableSize(im->screen->window, &dw, &dh);
+@@ -735,6 +795,12 @@
+         im->mouse_buttons_state &= ~button;
+     }
+ 
++    // Extendo: clicks on the navigation bar
++    if (button == SC_MOUSE_BUTTON_LEFT
++            && navbar_handle(im, event->x, event->y, down)) {
++        return;
++    }
++
+     SDL_Keymod keymod = SDL_GetModState();
+     bool ctrl_pressed = keymod & KMOD_CTRL;
+     bool shift_pressed = keymod & KMOD_SHIFT;
+diff -ruN a/app/src/screen.c b/app/src/screen.c
+--- a/app/src/screen.c	2025-12-17 22:21:05.000000000 +0300
++++ b/app/src/screen.c	2026-10-15 05:14:12.916763929 +0300
+@@ -11,6 +11,11 @@
+ 
+ #define DISPLAY_MARGINS 96
+ 
++// Extendo: height of the navigation bar (window pixels), shared by the size
++// helpers below that have no access to the screen.
++#define NAVBAR_DEFAULT_HEIGHT 48
++static int navbar_height = 0;
++
+ #define DOWNCAST(SINK) container_of(SINK, struct sc_screen, frame_sink)
+ 
+ static inline struct sc_size
+@@ -33,9 +38,10 @@
+     int height;
+     SDL_GetWindowSize(screen->window, &width, &height);
+ 
++    // Extendo: sizes below are for the video area, without the bar
+     struct sc_size size;
+     size.width = width;
+-    size.height = height;
++    size.height = MAX(1, height - screen->navbar_h);
+     return size;
+ }
+ 
+@@ -57,7 +63,8 @@
+     assert(!screen->fullscreen);
+     assert(!screen->maximized);
+     assert(!screen->minimized);
+-    SDL_SetWindowSize(screen->window, new_size.width, new_size.height);
++    SDL_SetWindowSize(screen->window, new_size.width,
++                      new_size.height + screen->navbar_h);
+ }
+ 
+ // get the preferred display bounds (i.e. the screen bounds with some margins)
+@@ -70,7 +77,7 @@
+     }
+ 
+     bounds->width = MAX(0, rect.w - DISPLAY_MARGINS);
+-    bounds->height = MAX(0, rect.h - DISPLAY_MARGINS);
++    bounds->height = MAX(0, rect.h - DISPLAY_MARGINS - navbar_height);
+     return true;
+ }
+ 
+@@ -170,6 +177,21 @@
+     int dh;
+     SDL_GL_GetDrawableSize(screen->window, &dw, &dh);
+ 
++    // Extendo: keep the bottom strip for the navigation bar
++    int bar = 0;
++    if (screen->navbar_h) {
++        int ww;
++        int wh;
++        SDL_GetWindowSize(screen->window, &ww, &wh);
++        bar = wh ? screen->navbar_h * dh / wh : 0;
++        bar = MIN(bar, dh / 2);
++    }
++    screen->navbar.rect.x = 0;
++    screen->navbar.rect.y = dh - bar;
++    screen->navbar.rect.w = bar ? dw : 0;
++    screen->navbar.rect.h = bar;
++    dh -= bar;
++
+     struct sc_size content_size = screen->content_size;
+     // The drawable size is the window size * the HiDPI scale
+     struct sc_size drawable_size = {dw, dh};
+@@ -214,14 +236,15 @@
+     }
+ 
+     enum sc_display_result res =
+-        sc_display_render(&screen->display, &screen->rect, screen->orientation);
++        sc_display_render(&screen->display, &screen->rect, screen->orientation,
++                          &screen->navbar);
+     (void) res; // any error already logged
+ }
+ 
+ static void
+ sc_screen_render_novideo(struct sc_screen *screen) {
+     enum sc_display_result res =
+-        sc_display_render(&screen->display, NULL, SC_ORIENTATION_0);
++        sc_display_render(&screen->display, NULL, SC_ORIENTATION_0, NULL);
+     (void) res; // any error already logged
+ }
+ 
+@@ -336,6 +359,18 @@
+ 
+     screen->video = params->video;
+ 
++    // Extendo: navigation bar, unless EXTENDO_NAVBAR=0 or no control
++    const char *nav_env = SDL_getenv("EXTENDO_NAVBAR");
++    bool nav_on = params->video && params->controller && params->kp
++               && !(nav_env && !strcmp(nav_env, "0"));
++    screen->navbar_h = nav_on ? NAVBAR_DEFAULT_HEIGHT : 0;
++    navbar_height = screen->navbar_h;
++    screen->navbar.rect.x = 0;
++    screen->navbar.rect.y = 0;
++    screen->navbar.rect.w = 0;
++    screen->navbar.rect.h = 0;
++    screen->navbar.pressed = -1;
++
+     screen->req.x = params->window_x;
+     screen->req.y = params->window_y;
+     screen->req.width = params->window_width;
+@@ -773,7 +808,8 @@
+     uint32_t new_x = point.x + (window_size.width - optimal_size.width) / 2;
+     uint32_t new_y = point.y + (window_size.height - optimal_size.height) / 2;
+ 
+-    SDL_SetWindowSize(screen->window, optimal_size.width, optimal_size.height);
++    SDL_SetWindowSize(screen->window, optimal_size.width,
++                      optimal_size.height + screen->navbar_h);
+     SDL_SetWindowPosition(screen->window, new_x, new_y);
+     LOGD("Resized to optimal size: %ux%u", optimal_size.width,
+                                            optimal_size.height);
+@@ -793,7 +829,8 @@
+     }
+ 
+     struct sc_size content_size = screen->content_size;
+-    SDL_SetWindowSize(screen->window, content_size.width, content_size.height);
++    SDL_SetWindowSize(screen->window, content_size.width,
++                      content_size.height + screen->navbar_h);
+     LOGD("Resized to pixel-perfect: %ux%u", content_size.width,
+                                             content_size.height);
+ }
+@@ -945,3 +982,24 @@
+     *x = (int64_t) *x * dw / ww;
+     *y = (int64_t) *y * dh / wh;
+ }
++
++int
++sc_screen_navbar_hit(struct sc_screen *screen, int32_t x, int32_t y) {
++    if (!screen->navbar_h || !screen->video) {
++        return -1;
++    }
++    int ww;
++    int wh;
++    SDL_GetWindowSize(screen->window, &ww, &wh);
++    if (y < wh - screen->navbar_h || y >= wh || x < 0 || x >= ww || ww < 3) {
++        return -1;
++    }
++    return MIN(2, x * 3 / ww);
++}
++
++void
++sc_screen_redraw(struct sc_screen *screen) {
++    if (screen->video && screen->has_frame) {
++        sc_screen_render(screen, false);
++    }
++}
+diff -ruN a/app/src/screen.h b/app/src/screen.h
+--- a/app/src/screen.h	2025-12-17 22:21:05.000000000 +0300
++++ b/app/src/screen.h	2026-10-15 05:13:53.462981406 +0300
+@@ -60,6 +60,9 @@
+     enum sc_orientation orientation;
+     // rectangle of the content (excluding black borders)
+     struct SDL_Rect rect;
++    // Extendo: navigation bar under the video
++    int navbar_h; // window (logical) pixels, 0 = no bar
++    struct sc_navbar navbar;
+     bool has_frame;
+     bool fullscreen;
+     bool maximized;
+@@ -171,4 +174,12 @@
+ void
+ sc_screen_hidpi_scale_coords(struct sc_screen *screen, int32_t *x, int32_t *y);
+ 
++// Extendo: which navigation button is at window position (x, y), or -1
++int
++sc_screen_navbar_hit(struct sc_screen *screen, int32_t x, int32_t y);
++
++// Extendo: redraw after the navigation bar state changed
++void
++sc_screen_redraw(struct sc_screen *screen);
++
+ #endif

@@ -99,8 +99,6 @@ struct App {
     tab: Tab,
     /// Device id of the pairing request we already raised the window for.
     pairing_seen: Option<String>,
-    /// Mirror control bars the user closed.
-    controls_hidden: std::collections::HashSet<String>,
     /// Text fields.
     mirror_address: String,
     storage_address: String,
@@ -131,7 +129,6 @@ impl App {
             mirror_address: String::new(),
             storage_address: String::new(),
             pairing_seen: None,
-            controls_hidden: Default::default(),
         }
     }
 
@@ -737,11 +734,21 @@ impl App {
                                             mirror::phone_action(app.shared.clone(), d.serial.clone(), action);
                                         }
                                     }
-                                    if app.controls_hidden.contains(&d.serial)
-                                        && ui.small_button("Controls").on_hover_text("Show the floating navigation bar").clicked()
-                                    {
-                                        app.controls_hidden.remove(&d.serial);
-                                    }
+                                    ui.menu_button("⋯", |ui| {
+                                        use mirror::PhoneAction as A;
+                                        for (label, action) in [
+                                            ("🔊  Volume up", A::VolumeUp),
+                                            ("🔉  Volume down", A::VolumeDown),
+                                            ("⏻  Power (lock / wake)", A::Power),
+                                            ("🔔  Open notifications", A::Notifications),
+                                            ("📷  Screenshot to Downloads/Extendo", A::Screenshot),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                mirror::phone_action(app.shared.clone(), d.serial.clone(), action);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
                                     ui.label(RichText::new("● Mirroring").color(p.good));
                                 } else if ui
                                     .add(egui::Button::new(RichText::new("▶  Mirror").color(Color32::WHITE)).fill(p.accent))
@@ -863,6 +870,10 @@ impl App {
                     ui.end_row();
                 });
             ui.add_space(6.0);
+            ui.checkbox(
+                &mut next.navbar,
+                "◁ ○ □  Navigation bar at the bottom of the mirror window",
+            );
             ui.checkbox(
                 &mut next.screen_off,
                 "🌙  Turn the phone screen off while mirroring (saves battery; Alt+O anytime)",
@@ -1078,78 +1089,6 @@ impl App {
         });
     }
 
-    /// A small always-on-top bar with phone buttons, one per mirror window.
-    fn mirror_controls(&mut self, ctx: &egui::Context) {
-        let p = self.palette();
-        let status = self.shared.status().clone();
-        self.controls_hidden
-            .retain(|s| status.mirroring.contains(s));
-        for serial in status.mirroring.clone() {
-            if self.controls_hidden.contains(&serial) {
-                continue;
-            }
-            let model = status
-                .usb_devices
-                .iter()
-                .find(|d| d.serial == serial)
-                .map(|d| d.model.clone())
-                .unwrap_or_else(|| serial.clone());
-            let shared = self.shared.clone();
-            let mut close = false;
-            ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of(("mirror-controls", &serial)),
-                egui::ViewportBuilder::default()
-                    .with_title(format!("Extendo controls · {model}"))
-                    .with_app_id("extendo")
-                    .with_inner_size([84.0, 470.0])
-                    .with_min_inner_size([84.0, 300.0])
-                    .with_resizable(false)
-                    .with_always_on_top(),
-                |ui, _class| {
-                    if ui.ctx().input(|i| i.viewport().close_requested()) {
-                        close = true;
-                    }
-                    egui::CentralPanel::default()
-                        .frame(Frame::default().fill(p.card).inner_margin(Margin::same(8)))
-                        .show(ui, |ui| {
-                            ui.vertical_centered(|ui| {
-                                ui.spacing_mut().item_spacing.y = 6.0;
-                                let button = |ui: &mut Ui, icon: &str, label: &str, action| {
-                                    let b = egui::Button::new(
-                                        RichText::new(format!("{icon}\n{label}"))
-                                            .size(12.0)
-                                            .color(p.text),
-                                    )
-                                    .min_size(Vec2::new(66.0, 46.0))
-                                    .corner_radius(CornerRadius::same(10));
-                                    if ui.add(b).clicked() {
-                                        mirror::phone_action(
-                                            shared.clone(),
-                                            serial.clone(),
-                                            action,
-                                        );
-                                    }
-                                };
-                                use mirror::PhoneAction as A;
-                                button(ui, "◁", "Back", A::Back);
-                                button(ui, "○", "Home", A::Home);
-                                button(ui, "□", "Recents", A::Recents);
-                                ui.separator();
-                                button(ui, "🔊", "Vol +", A::VolumeUp);
-                                button(ui, "🔉", "Vol −", A::VolumeDown);
-                                button(ui, "⏻", "Power", A::Power);
-                                button(ui, "🔔", "Notifs", A::Notifications);
-                                button(ui, "📷", "Shot", A::Screenshot);
-                            });
-                        });
-                },
-            );
-            if close {
-                self.controls_hidden.insert(serial);
-            }
-        }
-    }
-
     /// Asks whether a new WiFi tablet may connect.
     fn pairing_dialog(&mut self, ctx: &egui::Context) {
         let p = self.palette();
@@ -1317,7 +1256,6 @@ impl eframe::App for App {
                     });
             });
         self.pairing_dialog(&ctx);
-        self.mirror_controls(&ctx);
         // Refresh stats even when no other event arrives.
         ctx.request_repaint_after(Duration::from_secs(1));
         debug_screenshot(&ctx);
