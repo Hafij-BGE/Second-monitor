@@ -37,6 +37,9 @@ pub fn start(shared: Arc<Shared>) {
     shared.update_status(|s| s.pairing_code = identity.pairing_code());
     discovery::spawn(shared.clone(), port);
     adb::spawn(shared.clone(), port);
+    if shared.settings().manage_virtual_display {
+        backend::virtual_display_idle();
+    }
 
     thread::Builder::new()
         .name("server".into())
@@ -190,6 +193,7 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
         width: (((hello.width as f32 / scale) as u32).max(320)) & !1,
         height: (((hello.height as f32 / scale) as u32).max(240)) & !1,
         cursor_overlay: hello.flags & protocol::FLAG_CURSOR_OVERLAY != 0,
+        manage_virtual_display: settings.manage_virtual_display,
     };
     let mut capture = backend::start(&req)?;
     let frames = capture.frames.clone();

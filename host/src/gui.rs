@@ -477,6 +477,63 @@ impl App {
                     }
                     ui.end_row();
                 });
+            if backend::virtual_display_installed() == Some(true) {
+                let mut manage = s.manage_virtual_display;
+                if ui
+                    .checkbox(
+                        &mut manage,
+                        "Virtual display only while a tablet is connected (recommended)",
+                    )
+                    .on_hover_text(
+                        "Off: Virtual Display Driver's screen stays on all the time, \
+                         for other uses.",
+                    )
+                    .changed()
+                {
+                    app.update_setting(|s| s.manage_virtual_display = manage);
+                }
+            }
+            if s.mode == Mode::Extend && backend::virtual_display_installed() == Some(false) {
+                ui.add_space(6.0);
+                Frame::default()
+                    .fill(p.warn.gamma_multiply(0.12))
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new("Extend needs a virtual display on Windows")
+                                .strong()
+                                .color(p.text),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Windows can't add a screen by itself, so without one Extendo \
+                                 mirrors. Install the free, signed Virtual Display Driver (MIT \
+                                 licence) once; Extendo then adds and removes the tablet's screen \
+                                 automatically.",
+                            )
+                            .size(12.0)
+                            .color(p.muted),
+                        );
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("🖥  Set up extend").color(Color32::WHITE),
+                                )
+                                .fill(p.accent),
+                            )
+                            .on_hover_text(
+                                "Runs winget (accepts its source and package terms). \
+                                 Windows asks for admin approval.",
+                            )
+                            .clicked()
+                        {
+                            backend::install_virtual_display();
+                        }
+                    });
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(

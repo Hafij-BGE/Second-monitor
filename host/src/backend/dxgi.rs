@@ -34,6 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+use super::vdd;
 use super::{Capture, CaptureRequest, Frame, FrameSlot, InputSink, Mode};
 use crate::protocol::{MouseButton, MouseEvent, Touch, TouchAction};
 
@@ -107,6 +108,13 @@ pub fn list_monitors() -> Result<Vec<String>> {
         .collect())
 }
 
+fn find_output(device: &str) -> Option<OutputInfo> {
+    enumerate_outputs()
+        .ok()?
+        .into_iter()
+        .find(|o| o.name == device)
+}
+
 fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
     let mut outputs = enumerate_outputs()?;
     if outputs.is_empty() {
@@ -126,8 +134,8 @@ fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
             Some(i) => i,
             None => {
                 log::warn!(
-                    "only one monitor found, so mirroring it. Install Virtual Display Driver \
-                     (github.com/VirtualDrivers/Virtual-Display-Driver) to extend instead"
+                    "only one monitor, so mirroring it. To extend, click \"Set up extend\" \
+                     in Extendo (installs Virtual Display Driver)"
                 );
                 0
             }
@@ -138,7 +146,35 @@ fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
 }
 
 pub fn start(req: &CaptureRequest) -> Result<Capture> {
-    let target = pick_output(req)?;
+    // Extend: give the tablet its own virtual monitor (Virtual Display
+    // Driver), switched on for this connection only.
+    let mut virtual_on = false;
+    let mut chosen: Option<OutputInfo> = None;
+    if req.mode == Mode::Extend
+        && req.monitor.is_none()
+        && req.manage_virtual_display
+        && vdd::installed()
+    {
+        if vdd::output_name().is_none() {
+            log::info!(
+                "adding a virtual display for the tablet ({}x{})",
+                req.width,
+                req.height
+            );
+            if let Err(e) = vdd::turn_on(req.width, req.height, || vdd::output_name().is_some()) {
+                log::warn!("{e:#}");
+            }
+        }
+        if let Some(device) = vdd::output_name() {
+            vdd::set_resolution(&device, req.width, req.height);
+            chosen = find_output(&device);
+            virtual_on = true;
+        }
+    }
+    let target = match chosen {
+        Some(t) => t,
+        None => pick_output(req)?,
+    };
     let name = target.name.clone();
     log::info!("capturing {name} ({}x{})", target.width(), target.height());
 
@@ -152,6 +188,7 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         let running = running.clone();
         let monitor = req.monitor.clone();
         let mode = req.mode;
+        let device = name.clone();
         thread::Builder::new().name("dxgi".into()).spawn(move || {
             // COM objects are not Send: re-enumerate inside the capture thread.
             let result = (|| -> Result<()> {
@@ -161,8 +198,13 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
                     width: 0,
                     height: 0,
                     cursor_overlay: false,
+                    manage_virtual_display: false,
                 };
-                let target = pick_output(&req)?;
+                // Same monitor as chosen above, looked up again by name.
+                let target = match find_output(&device) {
+                    Some(t) => t,
+                    None => pick_output(&req)?,
+                };
                 let mut dup = Duplicator::new(&target)?;
                 let _ = ready_tx.send(Ok(()));
                 dup.run(&slot, &rect, &running)
@@ -191,7 +233,19 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         // Desktop duplication gives the pointer shape too, but for now it is
         // drawn into frames.
         cursor: None,
-        stop: Some(Box::new(move || stop_flag.store(false, Ordering::Relaxed))),
+        stop: Some(Box::new(move || {
+            stop_flag.store(false, Ordering::Relaxed);
+            if virtual_on {
+                // Remove the virtual monitor once capture has let go of it.
+                thread::spawn(|| {
+                    thread::sleep(std::time::Duration::from_millis(500));
+                    match vdd::set_display_count(0) {
+                        Ok(()) => log::info!("virtual display removed"),
+                        Err(e) => log::warn!("couldn't remove the virtual display: {e:#}"),
+                    }
+                });
+            }
+        })),
     })
 }
 

@@ -15,6 +15,8 @@ use mutter as platform;
 #[cfg(windows)]
 mod dxgi;
 #[cfg(windows)]
+mod vdd;
+#[cfg(windows)]
 use dxgi as platform;
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -51,6 +53,9 @@ pub struct CaptureRequest {
     /// it into frames. Backends that can't do this ignore it.
     #[cfg_attr(windows, allow(dead_code))]
     pub cursor_overlay: bool,
+    /// Windows: switch the virtual display on only while streaming.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub manage_virtual_display: bool,
 }
 
 /// Pointer state for viewers that draw the cursor themselves, so moving the
@@ -107,6 +112,37 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
 
 pub fn list_monitors() -> Result<Vec<String>> {
     platform::list_monitors()
+}
+
+/// Windows only: whether the virtual display driver needed for "extend" is
+/// installed. `None` where extend works without it (Linux/GNOME).
+pub fn virtual_display_installed() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        Some(vdd::installed())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Windows only: turns the managed virtual display off while no tablet is
+/// connected, so windows don't land on a screen nobody can see.
+pub fn virtual_display_idle() {
+    #[cfg(windows)]
+    if vdd::installed() && vdd::display_count() > 0 {
+        match vdd::set_display_count(0) {
+            Ok(()) => log::info!("virtual display off until a tablet connects"),
+            Err(e) => log::debug!("virtual display: {e:#}"),
+        }
+    }
+}
+
+/// Windows only: installs the virtual display driver with winget.
+pub fn install_virtual_display() {
+    #[cfg(windows)]
+    vdd::install();
 }
 
 /// Single-slot mailbox: the producer overwrites, the consumer always gets the

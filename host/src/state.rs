@@ -35,6 +35,9 @@ pub struct Settings {
     pub storage_address: String,
     /// Tablets allowed to connect over WiFi without asking.
     pub trusted_devices: Vec<TrustedDevice>,
+    /// Windows: Extendo switches Virtual Display Driver's monitor on only
+    /// while a tablet is connected.
+    pub manage_virtual_display: bool,
     /// Settings as on disk before command-line options changed them for
     /// this run; those options are never saved.
     #[serde(skip)]
@@ -110,6 +113,7 @@ impl Default for Settings {
             wifi_phones: Vec::new(),
             storage_address: String::new(),
             trusted_devices: Vec::new(),
+            manage_virtual_display: true,
             on_disk: None,
         }
     }
