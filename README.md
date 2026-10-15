@@ -34,7 +34,7 @@
 | Windows PC | `extendo-setup-<version>.exe` (installer) or `extendo-portable.exe` |
 | Android tablet | `extendo.apk` |
 
-GitHub Actions builds all of them on every push; tags like `v0.2.0` publish a Release.
+Download them from [Releases](https://github.com/Hafij-BGE/Second-monitor/releases). GitHub Actions also builds them on every push (see the run's artifacts).
 
 ## Getting started
 
