@@ -38,6 +38,30 @@ jobs:
           name: extendo-deb
           path: host/target/debian/*.deb
 
+  linux-packages:
+    # Each format is built inside its own distribution's container, so it
+    # links against that distribution's libraries. See host/packaging/linux/.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: appimage, image: "ubuntu:24.04", script: appimage.sh }
+          - { name: rpm-fedora, image: "fedora:42", script: rpm.sh }
+          - { name: arch, image: "archlinux:latest", script: arch.sh }
+          - { name: deb-ubuntu24.04, image: "ubuntu:24.04", script: deb.sh }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.name }}
+        run: |
+          mkdir -p dist/linux
+          docker run --rm -v "$PWD":/src:ro -v "$PWD/dist/linux":/out \
+            ${{ matrix.image }} bash /src/host/packaging/linux/${{ matrix.script }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extendo-${{ matrix.name }}
+          path: dist/linux/*
+
   windows-exe:
     runs-on: windows-latest
     defaults:

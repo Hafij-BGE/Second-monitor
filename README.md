@@ -28,13 +28,19 @@
 
 ## Downloads
 
-| Part | File |
-|------|------|
-| Linux PC (GNOME) | `extendo_<version>_amd64.deb` |
-| Windows PC | `extendo-setup-<version>.exe` (installer) or `extendo-portable.exe` |
-| Android tablet | `extendo.apk` |
+From [Releases](https://github.com/Hafij-BGE/Second-monitor/releases):
 
-Download them from [Releases](https://github.com/Hafij-BGE/Second-monitor/releases). GitHub Actions also builds them on every push (see the run's artifacts).
+| System | File |
+|--------|------|
+| Ubuntu 26.04 | `extendo_<version>-1_amd64.deb` |
+| Ubuntu 24.04, Mint 22 | `extendo_<version>-1.ubuntu24.04_amd64.deb` |
+| Fedora 42+ | `extendo-<version>-1.fc42.x86_64.rpm` |
+| Arch, Manjaro, EndeavourOS | `extendo-<version>-1-x86_64.pkg.tar.zst` |
+| Any Linux from 2024 on (glibc 2.39+) | `Extendo-<version>-x86_64.AppImage` or the portable `extendo-<version>-linux-x86_64.tar.gz` |
+| Windows 10/11 | `extendo-<version>-windows-x64-portable.zip` |
+| Android 7+ | `extendo-<version>-android.apk` |
+
+The PC side needs GNOME on Linux (Wayland or X11). GitHub Actions builds every format on each push; see `host/packaging/linux/` for the container builds.
 
 ## Getting started
 
