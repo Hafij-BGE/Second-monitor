@@ -163,7 +163,10 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
         .map(|a| a.ip().is_loopback())
         .unwrap_or(false);
     authorize(shared, &hello, &name, usb, &stream, &mut tls_writer)?;
+    // The device sends nothing while idle. On Windows every socket clone has
+    // its own timeout, so clear it on the reader's clone too.
     stream.set_read_timeout(None)?;
+    reader.get_ref().set_read_timeout(None)?;
     let settings = shared.settings();
     log::info!(
         "{name}: screen {}x{} @ {} dpi, protocol v{}",
@@ -264,7 +267,12 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
                         Ok(ClientMessage::FileData { id, data }) => incoming.data(id, &data),
                         Ok(ClientMessage::FileEnd { id, ok }) => incoming.end(id, ok),
                         Ok(ClientMessage::Unknown(t)) => log::debug!("ignoring message type {t}"),
-                        Err(_) => break,
+                        Err(e) => {
+                            if e.kind() != io::ErrorKind::UnexpectedEof {
+                                log::info!("device input ended: {e}");
+                            }
+                            break;
+                        }
                     }
                 }
                 closed.store(true, Ordering::Relaxed);
