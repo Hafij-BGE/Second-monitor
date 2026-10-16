@@ -321,9 +321,10 @@ impl Duplicator {
     /// Captures until `running` clears. A mode change, UAC prompt, lock
     /// screen or display layout change breaks duplication (or moves the
     /// screen to another output); then it starts over on the same monitor
-    /// instead of ending the session.
+    /// instead of ending the session. Only a monitor that stays gone ends it.
     fn run(&mut self, slot: &FrameSlot, rect: &Mutex<RECT>, running: &AtomicBool) -> Result<()> {
-        let mut recent: Vec<Instant> = Vec::new();
+        let mut last_loss: Option<Instant> = None;
+        let mut backoff = Duration::from_millis(200);
         loop {
             let Err(e) = self.capture(slot, rect, running) else {
                 return Ok(());
@@ -331,13 +332,17 @@ impl Duplicator {
             if !running.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            recent.retain(|t| t.elapsed() < Duration::from_secs(10));
-            if recent.len() >= 5 {
-                return Err(e);
+            // The lock screen or a UAC prompt keeps taking access away until
+            // it closes: wait longer each time while losses come quickly.
+            if last_loss.is_some_and(|t| t.elapsed() < Duration::from_secs(3)) {
+                thread::sleep(backoff);
+                backoff = (backoff * 2).min(Duration::from_secs(2));
+            } else {
+                backoff = Duration::from_millis(200);
+                log::info!("desktop duplication lost ({e:#}), recreating");
             }
-            recent.push(Instant::now());
-            log::info!("desktop duplication lost ({e:#}), recreating");
-            self.reopen()?;
+            last_loss = Some(Instant::now());
+            self.reopen(running)?;
             let desc = unsafe { self.output.GetDesc()? };
             *rect.lock().unwrap() = desc.DesktopCoordinates;
             self.origin = (desc.DesktopCoordinates.left, desc.DesktopCoordinates.top);
@@ -345,20 +350,26 @@ impl Duplicator {
     }
 
     /// A fresh duplication of the same monitor, looked up again by name.
-    fn reopen(&mut self) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    /// Waits while the monitor is there but can't be duplicated (lock screen,
+    /// UAC prompt); fails once it has been off the desktop for 5 s.
+    fn reopen(&mut self, running: &AtomicBool) -> Result<()> {
+        let mut gone_since: Option<Instant> = None;
         loop {
             thread::sleep(Duration::from_millis(200));
-            let fresh = find_output(&self.name)
-                .ok_or_else(|| anyhow!("{} is no longer on the desktop", self.name))
-                .and_then(|target| Duplicator::new(&target));
-            match fresh {
-                Ok(fresh) => {
-                    *self = fresh;
-                    return Ok(());
+            if !running.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            let Some(target) = find_output(&self.name) else {
+                let since = *gone_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_secs(5) {
+                    bail!("{} is no longer on the desktop", self.name);
                 }
-                Err(e) if Instant::now() >= deadline => return Err(e),
-                Err(_) => {}
+                continue;
+            };
+            gone_since = None;
+            if let Ok(fresh) = Duplicator::new(&target) {
+                *self = fresh;
+                return Ok(());
             }
         }
     }
