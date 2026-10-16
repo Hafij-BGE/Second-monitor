@@ -424,7 +424,7 @@ fn size_and_attach(device: &str, attached: bool, width: u32, height: u32) -> Res
     );
     if !attached {
         let x = desktop_right_edge();
-        unsafe { mode.Anonymous1.Anonymous2.dmPosition = POINTL { x, y: 0 } };
+        mode.Anonymous1.Anonymous2.dmPosition = POINTL { x, y: 0 };
         mode.dmFields = DEVMODE_FIELD_FLAGS(mode.dmFields.0 | DM_POSITION.0);
     }
     apply(device, &mode)
