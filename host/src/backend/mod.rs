@@ -131,8 +131,8 @@ pub fn virtual_display_installed() -> Option<bool> {
 /// connected, so windows don't land on a screen nobody can see.
 pub fn virtual_display_idle() {
     #[cfg(windows)]
-    if vdd::installed() && vdd::display_count() > 0 {
-        match vdd::set_display_count(0) {
+    if vdd::installed() && vdd::output_name().is_some() {
+        match vdd::turn_off() {
             Ok(()) => log::info!("virtual display off until a tablet connects"),
             Err(e) => log::debug!("virtual display: {e:#}"),
         }

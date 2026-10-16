@@ -1,20 +1,24 @@
 //! Real "extend" on Windows through Virtual Display Driver (VDD,
 //! github.com/VirtualDrivers/Virtual-Display-Driver, MIT, signed via
 //! SignPath). Windows has no API to create a monitor; VDD adds virtual ones
-//! that it reads from `C:\VirtualDisplayDriver\vdd_settings.xml` and that
-//! can be switched on and off through its named pipe.
+//! that it reads from `C:\VirtualDisplayDriver\vdd_settings.xml`.
+//!
+//! The driver keeps one monitor; Extendo attaches it to the desktop while a
+//! tablet is connected and detaches it afterwards. Changing the driver's
+//! monitor count instead reloads the driver each time (and it treats 0 as
+//! 1), and a few quick reloads crash it until Windows disables the device.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use windows::core::PCWSTR;
-use windows::Win32::Devices::Display::{SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_EXTEND};
-use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_WRITE, POINTL};
 use windows::Win32::Graphics::Gdi::{
-    ChangeDisplaySettingsExW, EnumDisplayDevicesW, EnumDisplaySettingsW, CDS_UPDATEREGISTRY,
-    DEVMODEW, DISPLAY_DEVICEW, DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISP_CHANGE_SUCCESSFUL,
-    ENUM_DISPLAY_SETTINGS_MODE,
+    ChangeDisplaySettingsExW, EnumDisplayDevicesW, EnumDisplaySettingsW, CDS_NORESET, CDS_TYPE,
+    CDS_UPDATEREGISTRY, DEVMODEW, DEVMODE_FIELD_FLAGS, DISPLAY_DEVICEW,
+    DISPLAY_DEVICE_ATTACHED_TO_DESKTOP, DISP_CHANGE_SUCCESSFUL, DM_DISPLAYFREQUENCY, DM_PELSHEIGHT,
+    DM_PELSWIDTH, DM_POSITION, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_NONE, OPEN_EXISTING,
@@ -25,6 +29,11 @@ const SETTINGS: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn text(w: &[u16]) -> String {
+    let len = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+    String::from_utf16_lossy(&w[..len])
 }
 
 /// True when the driver is installed (its settings file exists).
@@ -45,7 +54,12 @@ fn command(cmd: &str) -> Result<()> {
             FILE_FLAGS_AND_ATTRIBUTES(0),
             None,
         )
-        .map_err(|e| anyhow!("virtual display driver isn't running: {e}"))?;
+        .map_err(|e| {
+            anyhow!(
+                "virtual display driver isn't running ({e}); restart Windows or click \
+                 \"Set up extend\" again"
+            )
+        })?;
         // The driver reads UTF-16LE.
         let bytes: Vec<u8> = cmd.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         let result = WriteFile(pipe, Some(&bytes), None, None);
@@ -55,22 +69,9 @@ fn command(cmd: &str) -> Result<()> {
     Ok(())
 }
 
-/// Number of virtual monitors the driver is set to show.
-pub fn display_count() -> u32 {
-    std::fs::read_to_string(SETTINGS)
-        .ok()
-        .and_then(|xml| {
-            let start = xml.find("<count>")? + "<count>".len();
-            let end = xml[start..].find("</count>")? + start;
-            xml[start..end].trim().parse().ok()
-        })
-        .unwrap_or(0)
-}
-
-/// `\\.\DISPLAYn` of the driver's virtual monitor while it is on.
-pub fn output_name() -> Option<String> {
-    let mut i = 0;
-    loop {
+/// The driver's monitor as `(\\.\DISPLAYn, attached to the desktop)`.
+fn device() -> Option<(String, bool)> {
+    for i in 0.. {
         let mut dd = DISPLAY_DEVICEW {
             cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
             ..Default::default()
@@ -78,36 +79,51 @@ pub fn output_name() -> Option<String> {
         if !unsafe { EnumDisplayDevicesW(PCWSTR::null(), i, &mut dd, 0) }.as_bool() {
             return None;
         }
-        i += 1;
-        let text = |w: &[u16]| {
-            let len = w.iter().position(|&c| c == 0).unwrap_or(w.len());
-            String::from_utf16_lossy(&w[..len])
-        };
         let what = text(&dd.DeviceString);
-        let attached = dd.StateFlags.0 & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP.0 != 0;
-        if attached && (what.contains("Virtual Display") || what.contains("MttVDD")) {
-            return Some(text(&dd.DeviceName));
+        if what.contains("Virtual Display") || what.contains("MttVDD") {
+            let attached = dd.StateFlags.0 & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP.0 != 0;
+            return Some((text(&dd.DeviceName), attached));
         }
     }
+    None
 }
 
-pub fn set_display_count(n: u32) -> Result<()> {
-    command(&format!("SETDISPLAYCOUNT {n}"))
+/// `\\.\DISPLAYn` of the driver's virtual monitor while it is on.
+pub fn output_name() -> Option<String> {
+    device().filter(|(_, attached)| *attached).map(|(name, _)| name)
+}
+
+fn wait_for(timeout: Duration, ready: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+        if ready() {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(PartialEq)]
+enum Resolution {
+    Present,
+    Added,
+    Unavailable,
 }
 
 /// Adds `width`x`height` to the driver's resolution list if missing, so the
 /// virtual monitor can match the tablet. Needs write access to the settings
-/// folder; returns false when that isn't possible.
-fn ensure_resolution(width: u32, height: u32) -> bool {
+/// folder (the setup grants it).
+fn ensure_resolution(width: u32, height: u32) -> Resolution {
     let Ok(xml) = std::fs::read_to_string(SETTINGS) else {
-        return false;
+        return Resolution::Unavailable;
     };
     let compact: String = xml.split_whitespace().collect();
     if compact.contains(&format!("<width>{width}</width><height>{height}</height>")) {
-        return true;
+        return Resolution::Present;
     }
     let Some(at) = xml.find("</resolutions>") else {
-        return false;
+        return Resolution::Unavailable;
     };
     let entry = format!(
         "    <resolution>\n            <width>{width}</width>\n            <height>{height}</height>\n            <refresh_rate>60</refresh_rate>\n        </resolution>\n    "
@@ -116,80 +132,162 @@ fn ensure_resolution(width: u32, height: u32) -> bool {
     match std::fs::write(SETTINGS, updated) {
         Ok(()) => {
             log::info!("added {width}x{height} to the virtual display's resolutions");
-            true
+            Resolution::Added
         }
         Err(e) => {
             log::warn!("can't add {width}x{height} to {SETTINGS} ({e}); using the closest size");
-            false
+            Resolution::Unavailable
         }
     }
 }
 
-/// Makes Windows extend the desktop across all displays (not duplicate).
-fn extend_topology() {
-    let rc = unsafe { SetDisplayConfig(None, None, SDC_TOPOLOGY_EXTEND | SDC_APPLY) };
-    if rc != 0 {
-        log::debug!("SetDisplayConfig(extend) returned {rc}");
-    }
-}
-
-/// Sets `device` (e.g. `\\.\DISPLAY3`) to `width`x`height` if it offers it.
-pub fn set_resolution(device: &str, width: u32, height: u32) {
+/// `width`x`height` from `device`'s mode list, 60 Hz if offered.
+fn find_mode(device: &str, width: u32, height: u32) -> Option<DEVMODEW> {
     let name = wide(device);
-    unsafe {
+    let mut found = None;
+    for i in 0.. {
         let mut mode = DEVMODEW {
             dmSize: std::mem::size_of::<DEVMODEW>() as u16,
             ..Default::default()
         };
-        let mut i = 0;
-        let mut found = false;
-        while EnumDisplaySettingsW(
-            PCWSTR(name.as_ptr()),
-            ENUM_DISPLAY_SETTINGS_MODE(i),
-            &mut mode,
-        )
+        if !unsafe {
+            EnumDisplaySettingsW(PCWSTR(name.as_ptr()), ENUM_DISPLAY_SETTINGS_MODE(i), &mut mode)
+        }
         .as_bool()
         {
-            if mode.dmPelsWidth == width && mode.dmPelsHeight == height {
-                found = true;
-                break;
+            break;
+        }
+        if mode.dmPelsWidth == width && mode.dmPelsHeight == height {
+            if mode.dmDisplayFrequency == 60 {
+                return Some(mode);
             }
-            i += 1;
+            found.get_or_insert(mode);
         }
-        if !found {
-            log::info!("virtual display has no {width}x{height} mode; the tablet will letterbox");
-            return;
-        }
+    }
+    found
+}
+
+/// Stores `mode` for `device`, then applies all pending display changes.
+fn apply(device: &str, mode: &DEVMODEW) -> Result<()> {
+    let name = wide(device);
+    unsafe {
         let rc = ChangeDisplaySettingsExW(
             PCWSTR(name.as_ptr()),
-            Some(&mode),
+            Some(mode),
             None,
-            CDS_UPDATEREGISTRY,
+            CDS_TYPE(CDS_UPDATEREGISTRY.0 | CDS_NORESET.0),
             None,
         );
         if rc != DISP_CHANGE_SUCCESSFUL {
-            log::debug!("ChangeDisplaySettingsExW returned {}", rc.0);
+            bail!("changing {device} failed ({})", rc.0);
         }
+        let rc = ChangeDisplaySettingsExW(PCWSTR::null(), None, None, CDS_TYPE(0), None);
+        if rc != DISP_CHANGE_SUCCESSFUL {
+            bail!("applying display changes failed ({})", rc.0);
+        }
+    }
+    Ok(())
+}
+
+/// Right edge of the desktop's attached monitors, in pixels.
+fn desktop_right_edge() -> i32 {
+    let mut right = 0;
+    for i in 0.. {
+        let mut dd = DISPLAY_DEVICEW {
+            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+            ..Default::default()
+        };
+        if !unsafe { EnumDisplayDevicesW(PCWSTR::null(), i, &mut dd, 0) }.as_bool() {
+            break;
+        }
+        if dd.StateFlags.0 & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP.0 == 0 {
+            continue;
+        }
+        let mut mode = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        let current = unsafe {
+            EnumDisplaySettingsW(PCWSTR(dd.DeviceName.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode)
+        };
+        if current.as_bool() {
+            let x = unsafe { mode.Anonymous1.Anonymous2.dmPosition.x };
+            right = right.max(x + mode.dmPelsWidth as i32);
+        }
+    }
+    right
+}
+
+/// Sets `device` (e.g. `\\.\DISPLAY3`) to `width`x`height` if it offers it.
+pub fn set_resolution(device: &str, width: u32, height: u32) {
+    let Some(mut mode) = find_mode(device, width, height) else {
+        log::info!("virtual display has no {width}x{height} mode; the tablet will letterbox");
+        return;
+    };
+    mode.dmFields = DEVMODE_FIELD_FLAGS(
+        mode.dmFields.0 | DM_PELSWIDTH.0 | DM_PELSHEIGHT.0 | DM_DISPLAYFREQUENCY.0,
+    );
+    if let Err(e) = apply(device, &mode) {
+        log::debug!("{e:#}");
     }
 }
 
-/// Turns on one virtual monitor sized for the tablet and waits until
-/// Windows shows it. `has_second_monitor` re-checks the monitor list.
+/// Attaches the virtual monitor to the right of the desktop, sized for the
+/// tablet, and waits until Windows shows it. `has_second_monitor` re-checks
+/// the monitor list.
 pub fn turn_on(width: u32, height: u32, has_second_monitor: impl Fn() -> bool) -> Result<()> {
-    let reload = ensure_resolution(width, height);
-    set_display_count(1)?;
-    if reload {
-        let _ = command("RELOAD_DRIVER");
+    if ensure_resolution(width, height) == Resolution::Added {
+        // The driver reads its resolutions only when it starts.
+        command("RELOAD_DRIVER")?;
+        std::thread::sleep(Duration::from_millis(1500));
+        wait_for(Duration::from_secs(10), || device().is_some());
     }
-    let deadline = Instant::now() + Duration::from_secs(12);
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(400));
-        if has_second_monitor() {
-            extend_topology();
-            return Ok(());
+    if device().is_none() {
+        // Older Extendo versions set the driver's monitor count to 0.
+        command("SETDISPLAYCOUNT 1")?;
+        if !wait_for(Duration::from_secs(10), || device().is_some()) {
+            bail!("the virtual display didn't appear");
         }
     }
-    Err(anyhow!("the virtual display didn't appear"))
+    let (name, attached) = device().ok_or_else(|| anyhow!("the virtual display went away"))?;
+    if !attached {
+        let mut mode = find_mode(&name, width, height)
+            .or_else(|| {
+                log::info!(
+                    "virtual display has no {width}x{height} mode; the tablet will letterbox"
+                );
+                find_mode(&name, 1920, 1080)
+            })
+            .ok_or_else(|| anyhow!("the virtual display offers no usable size"))?;
+        let x = desktop_right_edge();
+        unsafe { mode.Anonymous1.Anonymous2.dmPosition = POINTL { x, y: 0 } };
+        mode.dmFields = DEVMODE_FIELD_FLAGS(
+            mode.dmFields.0
+                | DM_POSITION.0
+                | DM_PELSWIDTH.0
+                | DM_PELSHEIGHT.0
+                | DM_DISPLAYFREQUENCY.0,
+        );
+        apply(&name, &mode)?;
+    }
+    if wait_for(Duration::from_secs(8), has_second_monitor) {
+        Ok(())
+    } else {
+        Err(anyhow!("the virtual display didn't appear"))
+    }
+}
+
+/// Detaches the virtual monitor from the desktop, if it is attached.
+pub fn turn_off() -> Result<()> {
+    let Some((name, true)) = device() else {
+        return Ok(());
+    };
+    let mode = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        dmFields: DEVMODE_FIELD_FLAGS(DM_POSITION.0 | DM_PELSWIDTH.0 | DM_PELSHEIGHT.0),
+        ..Default::default()
+    };
+    apply(&name, &mode)
 }
 
 /// Setup script. The winget package is only the portable "VDD Control"

@@ -5,7 +5,7 @@
 //! example https://github.com/VirtualDrivers/Virtual-Display-Driver) to get one
 //! without a physical screen.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -145,6 +145,9 @@ fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
     Ok(outputs.swap_remove(index))
 }
 
+/// Capture sessions using the managed virtual monitor.
+static VIRTUAL_USERS: AtomicUsize = AtomicUsize::new(0);
+
 pub fn start(req: &CaptureRequest) -> Result<Capture> {
     // Extend: give the tablet its own virtual monitor (Virtual Display
     // Driver), switched on for this connection only.
@@ -155,20 +158,26 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         && req.manage_virtual_display
         && vdd::installed()
     {
+        // turn_on attaches it at the tablet's size already.
+        let mut sized = false;
         if vdd::output_name().is_none() {
             log::info!(
                 "adding a virtual display for the tablet ({}x{})",
                 req.width,
                 req.height
             );
-            if let Err(e) = vdd::turn_on(req.width, req.height, || vdd::output_name().is_some()) {
-                log::warn!("{e:#}");
+            match vdd::turn_on(req.width, req.height, || vdd::output_name().is_some()) {
+                Ok(()) => sized = true,
+                Err(e) => log::warn!("{e:#}"),
             }
         }
         if let Some(device) = vdd::output_name() {
-            vdd::set_resolution(&device, req.width, req.height);
+            if !sized {
+                vdd::set_resolution(&device, req.width, req.height);
+            }
             chosen = find_output(&device);
             virtual_on = true;
+            VIRTUAL_USERS.fetch_add(1, Ordering::SeqCst);
         }
     }
     let target = match chosen {
@@ -216,10 +225,17 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
             }
         })?;
     }
-    ready_rx
+    let ready = ready_rx
         .recv()
-        .map_err(|_| anyhow!("capture thread exited"))?
-        .with_context(|| format!("cannot capture {name}"))?;
+        .map_err(|_| anyhow!("capture thread exited"))
+        .and_then(|r| r)
+        .with_context(|| format!("cannot capture {name}"));
+    if let Err(e) = ready {
+        if virtual_on {
+            release_virtual_display();
+        }
+        return Err(e);
+    }
 
     let stop_flag = running.clone();
     Ok(Capture {
@@ -236,17 +252,25 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         stop: Some(Box::new(move || {
             stop_flag.store(false, Ordering::Relaxed);
             if virtual_on {
-                // Remove the virtual monitor once capture has let go of it.
-                thread::spawn(|| {
-                    thread::sleep(std::time::Duration::from_millis(500));
-                    match vdd::set_display_count(0) {
-                        Ok(()) => log::info!("virtual display removed"),
-                        Err(e) => log::warn!("couldn't remove the virtual display: {e:#}"),
-                    }
-                });
+                release_virtual_display();
             }
         })),
     })
+}
+
+/// Detaches the virtual monitor once capture has let go of it, unless a
+/// reconnected tablet is already using it again.
+fn release_virtual_display() {
+    thread::spawn(|| {
+        thread::sleep(std::time::Duration::from_millis(500));
+        if VIRTUAL_USERS.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        match vdd::turn_off() {
+            Ok(()) => log::info!("virtual display off"),
+            Err(e) => log::warn!("couldn't turn off the virtual display: {e:#}"),
+        }
+    });
 }
 
 struct Duplicator {
