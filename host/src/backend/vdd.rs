@@ -22,7 +22,6 @@ use windows::Win32::Storage::FileSystem::{
 
 const PIPE: &str = r"\\.\pipe\MTTVirtualDisplayPipe";
 const SETTINGS: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
-pub const WINGET_ID: &str = "VirtualDrivers.Virtual-Display-Driver";
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -193,21 +192,77 @@ pub fn turn_on(width: u32, height: u32, has_second_monitor: impl Fn() -> bool) -
     Err(anyhow!("the virtual display didn't appear"))
 }
 
-/// Opens a console that installs the driver with winget (asks for admin).
+/// Setup script. The winget package is only the portable "VDD Control"
+/// zip: it unpacks the signed driver but doesn't install it. So after winget
+/// the script re-runs itself elevated with `-Package` to create the settings
+/// folder and add the `Root\MttVDD` device with the bundled devcon.
+const SETUP_SCRIPT: &str = r#"param([string]$Package)
+$ErrorActionPreference = 'Stop'
+$releases = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases'
+if ($Package) {
+    try {
+        $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'x86' }
+        $driver = Join-Path $Package "SignedDrivers\$arch\VDD"
+        $dir = 'C:\VirtualDisplayDriver'
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        if (-not (Test-Path "$dir\vdd_settings.xml")) {
+            Copy-Item "$driver\vdd_settings.xml" $dir
+        }
+        # Extendo runs unelevated and adds the tablet's resolution here.
+        icacls $dir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Null
+        $device = Get-PnpDevice -ErrorAction SilentlyContinue |
+            Where-Object { $_.HardwareID -contains 'Root\MttVDD' }
+        if ($device) {
+            pnputil /add-driver "$driver\MttVDD.inf" /install
+        } else {
+            & (Join-Path $Package 'Dependencies\devcon.exe') install "$driver\MttVDD.inf" 'Root\MttVDD'
+        }
+        if ($LASTEXITCODE -gt 1) { throw "driver setup failed (exit code $LASTEXITCODE)" }
+        Write-Host ''
+        if ($LASTEXITCODE -eq 1) { Write-Host 'Done. Restart Windows, then connect your tablet.' }
+        else { Write-Host 'Done. Reconnect your tablet in Extendo.' }
+    } catch {
+        Write-Host ''
+        Write-Host "Failed: $_"
+        Write-Host "Install it by hand from $releases"
+    }
+    Read-Host 'Press Enter to close'
+    exit
+}
+try {
+    Write-Host 'Installing Virtual Display Driver (MIT, signed) for Extendo...'
+    winget install --id=VirtualDrivers.Virtual-Display-Driver -e --accept-source-agreements --accept-package-agreements
+    $pkg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages", "$env:ProgramFiles\WinGet\Packages" `
+        -Directory -Filter 'VirtualDrivers.Virtual-Display-Driver_*' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $pkg) { throw 'winget did not download the driver' }
+    Write-Host 'Windows will now ask for admin approval to add the driver.'
+    Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass',
+        '-File', "`"$PSCommandPath`"", '-Package', "`"$($pkg.FullName)`""
+} catch {
+    Write-Host ''
+    Write-Host "Failed: $_"
+    Write-Host "Install it by hand from $releases"
+    Read-Host 'Press Enter to close'
+}
+"#;
+
+/// Opens a console that downloads the driver with winget and installs it
+/// (asks for admin).
 pub fn install() {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-    let script = format!(
-        "echo Installing Virtual Display Driver (MIT, signed) for Extendo... && \
-         winget install --id={WINGET_ID} -e --accept-source-agreements --accept-package-agreements && \
-         echo. && echo Done. Reconnect your tablet in Extendo. || \
-         (echo. && echo winget failed. Download it from https://github.com/VirtualDrivers/Virtual-Display-Driver/releases) & pause"
-    );
-    if let Err(e) = std::process::Command::new("cmd")
-        .args(["/C", &script])
+    let path = std::env::temp_dir().join("extendo-setup-extend.ps1");
+    if let Err(e) = std::fs::write(&path, SETUP_SCRIPT) {
+        log::warn!("cannot write {}: {e}", path.display());
+        return;
+    }
+    if let Err(e) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&path)
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
     {
-        log::warn!("cannot start winget: {e}");
+        log::warn!("cannot start the driver setup: {e}");
     }
 }
