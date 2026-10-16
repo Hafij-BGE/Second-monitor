@@ -195,6 +195,11 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
         cursor_overlay: hello.flags & protocol::FLAG_CURSOR_OVERLAY != 0,
         manage_virtual_display: settings.manage_virtual_display,
     };
+    if settings.tablet_size != Some((req.width, req.height)) {
+        let mut s = shared.settings.lock().unwrap();
+        s.tablet_size = Some((req.width, req.height));
+        s.save();
+    }
     let mut capture = backend::start(&req)?;
     let frames = capture.frames.clone();
     let input = capture.input.clone();

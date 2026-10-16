@@ -8,7 +8,7 @@
 
 ## Features
 
-- **Extend or mirror.** On GNOME (Linux) Extendo creates a real virtual monitor sized for the tablet. On Windows it does the same through Virtual Display Driver (one-click setup).
+- **Extend or mirror.** On GNOME (Linux) Extendo creates a real virtual monitor sized for the tablet. On Windows it does the same through Parsec Virtual Display Driver (one-click setup).
 - **USB or WiFi.** USB goes through `adb` for the lowest latency; on WiFi the app finds the PC automatically.
 - **Touchscreen or trackpad.** Touch the PC directly, or use the tablet as a trackpad: tap to click, two-finger tap to right-click, two-finger scroll, press and hold to drag. A stylus or mouse always points directly.
 - **Keyboard and shortcuts.** On-screen keyboard, hardware keyboards, and a sidebar with Ctrl / Alt / Shift / Super, Esc, Tab, undo, cut, copy and paste.
@@ -50,7 +50,7 @@ The PC side needs GNOME on Linux (Wayland or X11). GitHub Actions builds every f
    - **USB:** turn on *Developer options → USB debugging* on the tablet, plug it in, accept the prompt, then tap **Connect over USB**. The PC needs `adb` (`sudo apt install adb`, or Android platform-tools on Windows next to `extendo.exe`).
    - **WiFi:** put both on the same network and tap your PC in the list. The Windows installer opens the firewall; with `ufw` on Linux run `sudo ufw allow 52020/tcp && sudo ufw allow 52021/udp`.
 
-On Windows, extending needs a virtual monitor: in Extendo's **Display** card, click **Set up extend** once. It installs the signed [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) with winget (Windows asks for admin approval). Extendo then switches that virtual monitor on while a tablet is connected and off again afterwards.
+On Windows, extending needs a virtual monitor: in Extendo's **Display** card, click **Set up extend** once. It downloads Parsec's signed [Parsec Virtual Display Driver](https://github.com/nomi-san/parsec-vdd) 0.41 from Parsec, checks the file and installs it (Windows asks for admin approval), and adds the tablet's screen size to the driver if a tablet has connected before. Extendo then plugs in a virtual monitor while a tablet is connected and unplugs it afterwards; if Extendo crashes or is closed, the driver removes it by itself within a second. If the tablet letterboxes because its size is missing, click **Add *width*×*height*** in the Display card. To remove the driver, uninstall it from Windows Settings → Apps. Extendo still uses [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) if that is installed instead.
 
 ## PC app options
 

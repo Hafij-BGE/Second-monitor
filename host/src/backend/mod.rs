@@ -15,6 +15,8 @@ use mutter as platform;
 #[cfg(windows)]
 mod dxgi;
 #[cfg(windows)]
+mod parsec;
+#[cfg(windows)]
 mod vdd;
 #[cfg(windows)]
 use dxgi as platform;
@@ -33,8 +35,8 @@ pub struct Frame {
     Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
 )]
 pub enum Mode {
-    /// Add a new virtual monitor (Linux: GNOME virtual monitor; Windows: a
-    /// non-primary monitor such as one from Virtual Display Driver).
+    /// Add a new virtual monitor (Linux: GNOME virtual monitor; Windows: one
+    /// from a virtual display driver, else a non-primary monitor).
     Extend,
     /// Show an existing monitor.
     Mirror,
@@ -114,12 +116,39 @@ pub fn list_monitors() -> Result<Vec<String>> {
     platform::list_monitors()
 }
 
-/// Windows only: whether the virtual display driver needed for "extend" is
+/// Windows only: whether a virtual display driver for "extend" is
 /// installed. `None` where extend works without it (Linux/GNOME).
 pub fn virtual_display_installed() -> Option<bool> {
     #[cfg(windows)]
     {
-        Some(vdd::installed())
+        Some(parsec::installed() || vdd::installed())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Windows only: true when extend uses Virtual Display Driver, whose screen
+/// can also stay on between connections. Parsec's exists only while
+/// Extendo runs.
+pub fn virtual_display_can_stay_on() -> bool {
+    #[cfg(windows)]
+    {
+        !parsec::installed() && vdd::installed()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Windows only: the tablet size the virtual display lacked on the last
+/// connection, so the tablet letterboxed.
+pub fn virtual_display_missing_size() -> Option<(u32, u32)> {
+    #[cfg(windows)]
+    {
+        parsec::missing_size()
     }
     #[cfg(not(windows))]
     {
@@ -139,10 +168,13 @@ pub fn virtual_display_idle() {
     }
 }
 
-/// Windows only: installs the virtual display driver with winget.
-pub fn install_virtual_display() {
+/// Windows only: installs Parsec Virtual Display Driver and adds the
+/// tablet's `size` to its sizes (asks for admin).
+pub fn install_virtual_display(size: Option<(u32, u32)>) {
     #[cfg(windows)]
-    vdd::install();
+    parsec::install(size);
+    #[cfg(not(windows))]
+    let _ = size;
 }
 
 /// Single-slot mailbox: the producer overwrites, the consumer always gets the

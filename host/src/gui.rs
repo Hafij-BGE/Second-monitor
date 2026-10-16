@@ -477,7 +477,8 @@ impl App {
                     }
                     ui.end_row();
                 });
-            if backend::virtual_display_installed() == Some(true) {
+            let installed = backend::virtual_display_installed();
+            if backend::virtual_display_can_stay_on() {
                 let mut manage = s.manage_virtual_display;
                 if ui
                     .checkbox(
@@ -492,8 +493,45 @@ impl App {
                 {
                     app.update_setting(|s| s.manage_virtual_display = manage);
                 }
+                if s.mode == Mode::Extend
+                    && ui
+                        .small_button("Switch to Parsec Virtual Display Driver")
+                        .on_hover_text(
+                            "Adds and removes the tablet's screen without restarting the \
+                             driver. Downloads Parsec's signed driver; Windows asks for admin \
+                             approval.",
+                        )
+                        .clicked()
+                {
+                    backend::install_virtual_display(s.tablet_size);
+                }
             }
-            if s.mode == Mode::Extend && backend::virtual_display_installed() == Some(false) {
+            if s.mode == Mode::Extend && installed == Some(true) {
+                if let Some((w, h)) = backend::virtual_display_missing_size() {
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "The virtual display has no {w}×{h} size yet, so the tablet \
+                                 letterboxes."
+                            ))
+                            .size(12.0)
+                            .color(p.muted),
+                        );
+                        if ui
+                            .small_button(format!("Add {w}×{h}"))
+                            .on_hover_text(
+                                "Windows asks for admin approval. Reconnect the tablet \
+                                 afterwards.",
+                            )
+                            .clicked()
+                        {
+                            backend::install_virtual_display(Some((w, h)));
+                        }
+                    });
+                }
+            }
+            if s.mode == Mode::Extend && installed == Some(false) {
                 ui.add_space(6.0);
                 Frame::default()
                     .fill(p.warn.gamma_multiply(0.12))
@@ -509,9 +547,9 @@ impl App {
                         ui.label(
                             RichText::new(
                                 "Windows can't add a screen by itself, so without one Extendo \
-                                 mirrors. Install the free, signed Virtual Display Driver (MIT \
-                                 licence) once; Extendo then adds and removes the tablet's screen \
-                                 automatically.",
+                                 mirrors. Install Parsec's free, signed virtual display driver \
+                                 once; Extendo then adds the tablet's screen while it is \
+                                 connected and removes it afterwards, even if Extendo crashes.",
                             )
                             .size(12.0)
                             .color(p.muted),
@@ -525,12 +563,12 @@ impl App {
                                 .fill(p.accent),
                             )
                             .on_hover_text(
-                                "Runs winget (accepts its source and package terms). \
+                                "Downloads Parsec Virtual Display Driver 0.41 from Parsec. \
                                  Windows asks for admin approval.",
                             )
                             .clicked()
                         {
-                            backend::install_virtual_display();
+                            backend::install_virtual_display(s.tablet_size);
                         }
                     });
             }

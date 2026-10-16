@@ -1,9 +1,9 @@
 //! Windows backend: DXGI Desktop Duplication for capture, SendInput for touch.
 //!
-//! Windows has no public API to create a monitor, so extend mode streams an
-//! existing non-primary monitor. Install a virtual display driver (for
-//! example https://github.com/VirtualDrivers/Virtual-Display-Driver) to get one
-//! without a physical screen.
+//! Windows has no public API to create a monitor, so extend mode adds one
+//! through a virtual display driver (Parsec VDD, see parsec.rs, or Virtual
+//! Display Driver, see vdd.rs) and otherwise streams an existing non-primary
+//! monitor.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -34,7 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
-use super::vdd;
+use super::{parsec, vdd};
 use super::{Capture, CaptureRequest, Frame, FrameSlot, InputSink, Mode};
 use crate::protocol::{MouseButton, MouseEvent, Touch, TouchAction};
 
@@ -135,7 +135,7 @@ fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
             None => {
                 log::warn!(
                     "only one monitor, so mirroring it. To extend, click \"Set up extend\" \
-                     in Extendo (installs Virtual Display Driver)"
+                     in Extendo (installs Parsec Virtual Display Driver)"
                 );
                 0
             }
@@ -146,15 +146,28 @@ fn pick_output(req: &CaptureRequest) -> Result<OutputInfo> {
 }
 
 pub fn start(req: &CaptureRequest) -> Result<Capture> {
-    // Extend: give the tablet its own virtual monitor (Virtual Display
-    // Driver), switched on for this connection only.
+    // Extend: give the tablet its own virtual monitor for this connection
+    // only. Parsec Virtual Display Driver if installed, else Virtual Display
+    // Driver.
     let mut virtual_on = false;
+    let mut parsec_display: Option<parsec::Display> = None;
     let mut chosen: Option<OutputInfo> = None;
-    if req.mode == Mode::Extend
-        && req.monitor.is_none()
-        && req.manage_virtual_display
-        && vdd::installed()
-    {
+    let extend = req.mode == Mode::Extend && req.monitor.is_none();
+    if extend && parsec::installed() {
+        log::info!(
+            "adding a virtual display for the tablet ({}x{})",
+            req.width,
+            req.height
+        );
+        match parsec::add(req.width, req.height, |name| find_output(name).is_some()) {
+            Ok(display) => {
+                chosen = find_output(display.name());
+                parsec_display = Some(display);
+            }
+            Err(e) => log::warn!("{e:#}"),
+        }
+    }
+    if chosen.is_none() && extend && req.manage_virtual_display && vdd::installed() {
         if vdd::output_name().is_none() {
             log::info!(
                 "adding a virtual display for the tablet ({}x{})",
@@ -235,6 +248,13 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
         cursor: None,
         stop: Some(Box::new(move || {
             stop_flag.store(false, Ordering::Relaxed);
+            if let Some(display) = parsec_display {
+                // Unplug it once capture has let go of it.
+                thread::spawn(move || {
+                    thread::sleep(std::time::Duration::from_millis(500));
+                    drop(display);
+                });
+            }
             if virtual_on {
                 // Remove the virtual monitor once capture has let go of it.
                 thread::spawn(|| {

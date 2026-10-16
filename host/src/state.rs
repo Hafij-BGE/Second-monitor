@@ -38,6 +38,9 @@ pub struct Settings {
     /// Windows: Extendo switches Virtual Display Driver's monitor on only
     /// while a tablet is connected.
     pub manage_virtual_display: bool,
+    /// Last tablet's screen size after scaling, for sizing the Windows
+    /// virtual display when setting it up.
+    pub tablet_size: Option<(u32, u32)>,
     /// Settings as on disk before command-line options changed them for
     /// this run; those options are never saved.
     #[serde(skip)]
@@ -114,6 +117,7 @@ impl Default for Settings {
             storage_address: String::new(),
             trusted_devices: Vec::new(),
             manage_virtual_display: true,
+            tablet_size: None,
             on_disk: None,
         }
     }
