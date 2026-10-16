@@ -62,7 +62,25 @@ jobs:
           name: extendo-${{ matrix.name }}
           path: dist/linux/*
 
+  windows-mirror:
+    # scrcpy with Extendo's navigation bar, cross-compiled for Windows the
+    # way scrcpy builds its own win64 release.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build nasm mingw-w64 mingw-w64-tools libz-mingw-w64-dev
+      - name: Build mirror engine
+        run: host/packaging/build-mirror-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extendo-mirror-win64
+          path: host/packaging/mirror/win64/*
+
   windows-exe:
+    needs: windows-mirror
     runs-on: windows-latest
     defaults:
       run:
@@ -87,6 +105,16 @@ jobs:
           Move-Item windows\scrcpy\scrcpy.exe windows\scrcpy\extendo-mirror.exe -Force
           Remove-Item windows\scrcpy\icon.png, windows\scrcpy\*.bat, windows\scrcpy\*.vbs -ErrorAction SilentlyContinue
           Copy-Item ..\assets\extendo-256.png windows\scrcpy\extendo.png
+      - uses: actions/download-artifact@v4
+        with:
+          name: extendo-mirror-win64
+          path: host/windows/scrcpy-navbar
+      - name: Use the mirror engine with the navigation bar
+        shell: pwsh
+        run: |
+          # Same scrcpy version and DLLs as the official zip, plus the patch.
+          Copy-Item windows\scrcpy-navbar\* windows\scrcpy\ -Force
+          Remove-Item -Recurse windows\scrcpy-navbar
       - name: Build installer
         shell: pwsh
         run: |
