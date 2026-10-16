@@ -236,8 +236,9 @@ impl Drop for Display {
 }
 
 /// The driver's monitors: (`\\.\DISPLAYn`, interface path, attached to the
-/// desktop).
-fn monitors() -> Vec<(String, String, bool)> {
+/// desktop, shown by one of the driver's own outputs). The last is false
+/// while Windows duplicates another screen onto the monitor.
+fn monitors() -> Vec<(String, String, bool, bool)> {
     let mut found = Vec::new();
     for i in 0.. {
         let mut source = DISPLAY_DEVICEW {
@@ -266,7 +267,8 @@ fn monitors() -> Vec<(String, String, bool)> {
             let path = text(&monitor.DeviceID).to_ascii_uppercase();
             if path.contains(MONITOR_ID) {
                 let attached = source.StateFlags.0 & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP.0 != 0;
-                found.push((text(&source.DeviceName), path, attached));
+                let own = text(&source.DeviceString).contains("Parsec");
+                found.push((text(&source.DeviceName), path, attached, own));
             }
         }
     }
@@ -276,16 +278,19 @@ fn monitors() -> Vec<(String, String, bool)> {
 /// The monitor for driver index `index`: its interface path carries
 /// `UID<256 + index>`. Falls back to any of the driver's monitors that
 /// wasn't there `before`.
-fn find_monitor(index: u32, before: &[(String, String, bool)]) -> Option<(String, bool)> {
+fn find_monitor(
+    index: u32,
+    before: &[(String, String, bool, bool)],
+) -> Option<(String, bool, bool)> {
     let now = monitors();
     let uid = format!("UID{}#", 256 + index);
     now.iter()
-        .find(|(_, path, _)| path.contains(&uid))
+        .find(|(_, path, _, _)| path.contains(&uid))
         .or_else(|| {
             now.iter()
-                .find(|(_, path, _)| !before.iter().any(|(_, old, _)| old == path))
+                .find(|(_, path, _, _)| !before.iter().any(|(_, old, _, _)| old == path))
         })
-        .map(|(name, _, attached)| (name.clone(), *attached))
+        .map(|(name, _, attached, own)| (name.clone(), *attached, *own))
 }
 
 fn poll<T>(timeout: Duration, mut check: impl FnMut() -> Option<T>) -> Option<T> {
@@ -332,13 +337,23 @@ fn exact_mode(modes: &[DEVMODEW], width: u32, height: u32) -> Option<DEVMODEW> {
         .copied()
 }
 
-/// Largest mode that fits in `width`x`height`, 60 Hz preferred.
+/// True when `mode` has the tablet's shape (within 2%), so scaling it up
+/// fills the tablet without bars.
+fn same_shape(mode: &DEVMODEW, width: u32, height: u32) -> bool {
+    let shape = width as f64 / height.max(1) as f64;
+    let ratio = mode.dmPelsWidth as f64 / mode.dmPelsHeight.max(1) as f64;
+    (ratio / shape - 1.0).abs() <= 0.02
+}
+
+/// Largest mode that fits in `width`x`height`, preferring the tablet's
+/// shape, then 60 Hz.
 fn fitting_mode(modes: &[DEVMODEW], width: u32, height: u32) -> Option<DEVMODEW> {
     modes
         .iter()
         .filter(|m| m.dmPelsWidth <= width && m.dmPelsHeight <= height)
         .max_by_key(|m| {
             (
+                same_shape(m, width, height),
                 m.dmPelsWidth as u64 * m.dmPelsHeight as u64,
                 m.dmDisplayFrequency == 60,
             )
@@ -402,18 +417,21 @@ fn desktop_right_edge() -> i32 {
 fn size_and_attach(device: &str, attached: bool, width: u32, height: u32) -> Result<()> {
     let all = modes(device);
     let exact = exact_mode(&all, width, height);
-    *MISSING_SIZE.lock().unwrap() = if exact.is_some() {
-        None
-    } else {
-        Some((width, height))
-    };
-    let Some(mut mode) = exact.or_else(|| {
-        log::info!(
-            "the virtual display has no {width}x{height} mode, so the tablet will letterbox; \
-             click \"Add {width}×{height}\" in Extendo to add it"
-        );
-        fitting_mode(&all, width, height)
-    }) else {
+    let chosen = exact.or_else(|| {
+        let fit = fitting_mode(&all, width, height);
+        if let Some(m) = &fit {
+            log::info!(
+                "the virtual display has no {width}x{height} mode; using {}x{}",
+                m.dmPelsWidth,
+                m.dmPelsHeight
+            );
+        }
+        fit
+    });
+    // Offer "Add WxH" only when the tablet would get bars.
+    let fills = chosen.as_ref().is_some_and(|m| same_shape(m, width, height));
+    *MISSING_SIZE.lock().unwrap() = if fills { None } else { Some((width, height)) };
+    let Some(mut mode) = chosen else {
         if attached {
             return Ok(());
         }
@@ -447,11 +465,22 @@ pub fn add(width: u32, height: u32, visible: impl Fn(&str) -> bool) -> Result<Di
         index,
         name: String::new(),
     };
-    let (name, _) = poll(Duration::from_secs(6), || find_monitor(index, &before))
+    let (_, _, own) = poll(Duration::from_secs(6), || find_monitor(index, &before))
         .ok_or_else(|| anyhow!("the virtual display didn't show up in Windows"))?;
+    if !own {
+        // Windows shows another screen on it (Win+P was "Duplicate").
+        log::info!("Windows is duplicating the screens; switching to extend");
+        super::vdd::extend_topology();
+    }
+    let (name, _, _) = poll(Duration::from_secs(6), || {
+        find_monitor(index, &before).filter(|(_, _, own)| *own)
+    })
+    .ok_or_else(|| {
+        anyhow!("Windows keeps duplicating the screens; press Win+P and choose Extend")
+    })?;
     // Windows usually extends the desktop onto a new monitor by itself.
     let attached = poll(Duration::from_millis(1500), || {
-        find_monitor(index, &before).filter(|(_, attached)| *attached)
+        find_monitor(index, &before).filter(|(_, attached, own)| *attached && *own)
     })
     .is_some();
     log::info!("virtual display is {name}");

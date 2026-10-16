@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use windows::core::Interface;
@@ -20,7 +21,7 @@ use windows::Win32::Graphics::Direct3D11::{
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput1, IDXGIOutputDuplication,
-    IDXGIResource, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
+    IDXGIResource, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
     DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -251,14 +252,14 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
             if let Some(display) = parsec_display {
                 // Unplug it once capture has let go of it.
                 thread::spawn(move || {
-                    thread::sleep(std::time::Duration::from_millis(500));
+                    thread::sleep(Duration::from_millis(500));
                     drop(display);
                 });
             }
             if virtual_on {
                 // Remove the virtual monitor once capture has let go of it.
                 thread::spawn(|| {
-                    thread::sleep(std::time::Duration::from_millis(500));
+                    thread::sleep(Duration::from_millis(500));
                     match vdd::set_display_count(0) {
                         Ok(()) => log::info!("virtual display removed"),
                         Err(e) => log::warn!("couldn't remove the virtual display: {e:#}"),
@@ -270,6 +271,8 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
 }
 
 struct Duplicator {
+    /// `\\.\DISPLAYn`, to find the monitor again after a layout change.
+    name: String,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     output: IDXGIOutput1,
@@ -303,6 +306,7 @@ impl Duplicator {
                 .DuplicateOutput(&device)
                 .context("DuplicateOutput (another app may already be duplicating this screen)")?;
             Ok(Self {
+                name: target.name.clone(),
                 device,
                 context,
                 output: target.output.clone(),
@@ -314,7 +318,57 @@ impl Duplicator {
         }
     }
 
+    /// Captures until `running` clears. A mode change, UAC prompt, lock
+    /// screen or display layout change breaks duplication (or moves the
+    /// screen to another output); then it starts over on the same monitor
+    /// instead of ending the session.
     fn run(&mut self, slot: &FrameSlot, rect: &Mutex<RECT>, running: &AtomicBool) -> Result<()> {
+        let mut recent: Vec<Instant> = Vec::new();
+        loop {
+            let Err(e) = self.capture(slot, rect, running) else {
+                return Ok(());
+            };
+            if !running.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            recent.retain(|t| t.elapsed() < Duration::from_secs(10));
+            if recent.len() >= 5 {
+                return Err(e);
+            }
+            recent.push(Instant::now());
+            log::info!("desktop duplication lost ({e:#}), recreating");
+            self.reopen()?;
+            let desc = unsafe { self.output.GetDesc()? };
+            *rect.lock().unwrap() = desc.DesktopCoordinates;
+            self.origin = (desc.DesktopCoordinates.left, desc.DesktopCoordinates.top);
+        }
+    }
+
+    /// A fresh duplication of the same monitor, looked up again by name.
+    fn reopen(&mut self) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            thread::sleep(Duration::from_millis(200));
+            let fresh = find_output(&self.name)
+                .ok_or_else(|| anyhow!("{} is no longer on the desktop", self.name))
+                .and_then(|target| Duplicator::new(&target));
+            match fresh {
+                Ok(fresh) => {
+                    *self = fresh;
+                    return Ok(());
+                }
+                Err(e) if Instant::now() >= deadline => return Err(e),
+                Err(_) => {}
+            }
+        }
+    }
+
+    fn capture(
+        &mut self,
+        slot: &FrameSlot,
+        rect: &Mutex<RECT>,
+        running: &AtomicBool,
+    ) -> Result<()> {
         while running.load(Ordering::Relaxed) {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource: Option<IDXGIResource> = None;
@@ -322,16 +376,6 @@ impl Duplicator {
             match acquired {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
-                Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
-                    // Mode change, UAC prompt, lock screen...: recreate.
-                    log::info!("desktop duplication lost, recreating");
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                    self.dup = unsafe { self.output.DuplicateOutput(&self.device)? };
-                    let desc = unsafe { self.output.GetDesc()? };
-                    *rect.lock().unwrap() = desc.DesktopCoordinates;
-                    self.origin = (desc.DesktopCoordinates.left, desc.DesktopCoordinates.top);
-                    continue;
-                }
                 Err(e) => return Err(e.into()),
             }
 
