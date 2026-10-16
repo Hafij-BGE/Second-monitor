@@ -37,7 +37,7 @@ From [Releases](https://github.com/Hafij-BGE/Second-monitor/releases):
 | Fedora 42+ | `extendo-<version>-1.fc42.x86_64.rpm` |
 | Arch, Manjaro, EndeavourOS | `extendo-<version>-1-x86_64.pkg.tar.zst` |
 | Any Linux from 2024 on (glibc 2.39+) | `Extendo-<version>-x86_64.AppImage` or the portable `extendo-<version>-linux-x86_64.tar.gz` |
-| Windows 10/11 | `extendo-<version>-windows-x64-portable.zip` |
+| Windows 10/11 | `extendo-<version>-windows-x64-setup.exe` (installer) or the portable `extendo-<version>-windows-x64-portable.zip` |
 | Android 7+ | `extendo-<version>-android.apk` |
 
 The PC side needs GNOME on Linux (Wayland or X11). GitHub Actions builds every format on each push; see `host/packaging/linux/` for the container builds.
