@@ -13,6 +13,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -150,6 +151,12 @@ fn flush_tls(conn: &mut ServerConnection, mut socket: &TcpStream) -> io::Result<
         conn.write_tls(&mut socket)?;
     }
     Ok(())
+}
+
+impl TlsReader {
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.socket.set_read_timeout(timeout)
+    }
 }
 
 impl Read for TlsReader {
