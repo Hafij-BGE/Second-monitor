@@ -1,6 +1,6 @@
 [package]
 name = "extendo"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Extendo: use an Android tablet as a second monitor over USB or WiFi"
 license = "MIT"
