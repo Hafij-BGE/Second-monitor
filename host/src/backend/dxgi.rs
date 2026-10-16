@@ -369,13 +369,24 @@ impl Duplicator {
         rect: &Mutex<RECT>,
         running: &AtomicBool,
     ) -> Result<()> {
+        let mut checked = Instant::now();
         while running.load(Ordering::Relaxed) {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource: Option<IDXGIResource> = None;
             let acquired = unsafe { self.dup.AcquireNextFrame(100, &mut info, &mut resource) };
             match acquired {
                 Ok(()) => {}
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => continue,
+                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {
+                    // Switching Windows to "Duplicate" takes the monitor off
+                    // the desktop without any error; frames just stop.
+                    if checked.elapsed() >= Duration::from_secs(1) {
+                        checked = Instant::now();
+                        if find_output(&self.name).is_none() {
+                            bail!("{} is no longer on the desktop", self.name);
+                        }
+                    }
+                    continue;
+                }
                 Err(e) => return Err(e.into()),
             }
 
