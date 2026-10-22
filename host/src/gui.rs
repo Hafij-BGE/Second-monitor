@@ -108,6 +108,7 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, shared: Arc<Shared>) -> Self {
         let ctx = cc.egui_ctx.clone();
         shared.set_repaint(move || ctx.request_repaint());
+        crate::background::set_window(Some(cc.egui_ctx.clone()));
         shared
             .has_gui
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -726,6 +727,43 @@ impl App {
                 }
                 ui.label(RichText::new("restart to apply").size(12.0).color(p.muted));
             });
+            ui.add_space(6.0);
+            let mut background = s.run_in_background;
+            if ui
+                .checkbox(
+                    &mut background,
+                    "🌙  Keep running in the background when the window closes",
+                )
+                .changed()
+            {
+                app.update_setting(|s| s.run_in_background = background);
+            }
+            let mut at_login = crate::background::start_at_login();
+            if ui
+                .checkbox(
+                    &mut at_login,
+                    "🚀  Start Extendo when I log in (in the background)",
+                )
+                .changed()
+            {
+                match crate::background::set_start_at_login(at_login) {
+                    Ok(()) if at_login => log::info!("Extendo will start when you log in"),
+                    Ok(()) => log::info!("Extendo won't start when you log in"),
+                    Err(e) => log::error!("{e:#}"),
+                }
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(
+                        "Open the window again from the tray icon or by starting Extendo.",
+                    )
+                    .size(12.0)
+                    .color(p.muted),
+                );
+                if ui.button("⏻  Quit Extendo").clicked() {
+                    crate::background::send(crate::background::Request::Quit);
+                }
+            });
         });
     }
 
@@ -1316,9 +1354,27 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        crate::background::set_window(None);
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        for request in crate::background::take() {
+            match request {
+                crate::background::Request::Show => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                crate::background::Request::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+                }
+            }
+        }
         self.apply_theme(&ctx);
         self.handle_dropped_files(&ctx);
         let p = self.palette();

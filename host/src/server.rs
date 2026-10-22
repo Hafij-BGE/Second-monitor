@@ -348,6 +348,8 @@ fn authorize(
         anyhow::bail!("{name} ({address}) isn't paired; open the Extendo window to allow it");
     }
     log::info!("{name} ({address}) wants to connect; waiting for you to allow it");
+    // The window may be closed while Extendo runs in the background.
+    crate::background::send(crate::background::Request::Show);
     protocol::write_auth(w, protocol::AUTH_PENDING)?;
     let (tx, rx) = mpsc::channel();
     *shared.pairing_reply.lock().unwrap() = Some(tx);

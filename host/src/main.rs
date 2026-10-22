@@ -3,6 +3,7 @@
 
 mod adb;
 mod backend;
+mod background;
 mod clipboard;
 mod desktop;
 mod discovery;
@@ -34,6 +35,10 @@ struct Args {
     /// Run without a window (logs to the terminal).
     #[arg(long)]
     headless: bool,
+
+    /// Start with the window closed; Extendo keeps running in the tray.
+    #[arg(long, conflicts_with = "headless")]
+    background: bool,
 
     /// List monitors and exit.
     #[arg(long)]
@@ -84,6 +89,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // One copy runs at a time; starting Extendo again opens its window.
+    if !args.headless {
+        if let background::Instance::AlreadyRunning = background::claim(!args.background) {
+            log::info!("Extendo is already running; opening its window");
+            return Ok(());
+        }
+    }
+
     let disk = Settings::load();
     let mut settings = disk.clone();
     if let Some(v) = args.port {
@@ -129,10 +142,7 @@ fn main() -> Result<()> {
     mirror::reconnect_saved(shared.clone());
 
     if !args.headless {
-        match gui::run(shared.clone()) {
-            Ok(()) => return Ok(()),
-            Err(e) => log::error!("cannot open the window ({e}); running in the background"),
-        }
+        return run_windowed(&shared, !args.background);
     }
     if let Some(err) = shared.status().server_error.clone() {
         anyhow::bail!(err);
@@ -140,6 +150,39 @@ fn main() -> Result<()> {
     loop {
         std::thread::park();
     }
+}
+
+/// Shows the window, and keeps serving tablets after it closes when
+/// "Keep running in the background" is on.
+fn run_windowed(shared: &std::sync::Arc<Shared>, mut show: bool) -> Result<()> {
+    // Pairing requests can open the window, so WiFi tablets can still ask.
+    shared
+        .has_gui
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    background::start_tray();
+    loop {
+        if show {
+            if let Err(e) = gui::run(shared.clone()) {
+                log::error!("cannot open the window ({e})");
+            }
+            // Requests the closed window didn't get to are stale.
+            let _ = background::take();
+            if background::quit_requested() || !shared.settings().run_in_background {
+                break;
+            }
+            if let Some(err) = shared.status().server_error.clone() {
+                background::stop_tray();
+                anyhow::bail!(err);
+            }
+            log::info!("window closed; Extendo keeps running in the background");
+        }
+        match background::wait() {
+            background::Request::Show => show = true,
+            background::Request::Quit => break,
+        }
+    }
+    background::stop_tray();
+    Ok(())
 }
 
 #[cfg(windows)]

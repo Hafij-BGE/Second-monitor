@@ -35,6 +35,7 @@
 | 🖱️ **Lag-free pointer** | The tablet draws the mouse pointer itself, so it moves without waiting for the video. Optional performance overlay. |
 | 📱 **Extendo Mirror** | See and control your phone on the PC with sound, over cable or WiFi, with a Back / Home / Recents bar under the window. Turn the phone screen off while mirroring continues. |
 | 🗂️ **Phone storage** | Browse and copy the phone's files from the PC's own file manager, like a USB drive. |
+| 🌙 **Runs in the background** | Closing the window keeps Extendo ready for tablets, with a tray icon (Open / Quit). Optionally starts hidden when you log in. |
 
 ## Download
 
@@ -132,10 +133,13 @@ Alt can be replaced by the Super (Windows) key.
 The PC app opens a window by default. For a terminal-only setup:
 
 ```text
+extendo --background                # start with the window closed (tray icon)
 extendo --headless [--mode extend|mirror] [--monitor NAME] [--fps 60]
                    [--bitrate 12] [--scale 1.5] [--port 52020] [--no-usb] [--no-discovery]
 extendo --list
 ```
+
+Closing the window keeps Extendo running in the background; turn this off under *Screen → Options*, or quit from the tray icon or the **Quit Extendo** button. Starting Extendo again opens the window of the copy already running. On GNOME the tray icon needs the AppIndicator extension (included in Ubuntu).
 
 Settings are saved in `~/.config/extendo/settings.json` (Linux) or `%APPDATA%\extendo` (Windows). Received files go to `Downloads/Extendo`.
 

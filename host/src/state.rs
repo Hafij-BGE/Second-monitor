@@ -41,6 +41,8 @@ pub struct Settings {
     /// Last tablet's screen size after scaling, for sizing the Windows
     /// virtual display when setting it up.
     pub tablet_size: Option<(u32, u32)>,
+    /// Closing the window keeps Extendo running (tray icon).
+    pub run_in_background: bool,
     /// Settings as on disk before command-line options changed them for
     /// this run; those options are never saved.
     #[serde(skip)]
@@ -118,6 +120,7 @@ impl Default for Settings {
             trusted_devices: Vec::new(),
             manage_virtual_display: true,
             tablet_size: None,
+            run_in_background: true,
             on_disk: None,
         }
     }
