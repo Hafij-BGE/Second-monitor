@@ -25,7 +25,7 @@ install_rust() {
 copy_source() {
     rm -rf "$WORK"
     mkdir -p "$WORK"
-    cp -a "$SRC/host" "$SRC/assets" "$WORK/"
+    cp -a "$SRC/host" "$SRC/assets" "$SRC/LICENSE" "$SRC/THIRD_PARTY_NOTICES.md" "$WORK/"
     rm -rf "$WORK/host/target" "$WORK/host/packaging/mirror/build-src" \
            "$WORK/host/packaging/mirror/extendo-mirror"
 }
