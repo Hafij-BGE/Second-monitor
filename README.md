@@ -43,12 +43,12 @@ Get the latest build from **[Releases](https://github.com/Hafij-BGE/Second-monit
 
 | Platform | Package |
 |---|---|
-| **Windows 10 / 11** | [Installer `.exe`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo-0.2.3-windows-x64-setup.exe) · [Portable `.zip`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo-0.2.3-windows-x64-portable.zip) |
-| **Ubuntu 26.04** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo_0.2.3-1_amd64.deb) |
-| **Ubuntu 24.04, Mint 22** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo_0.2.3-1.ubuntu24.04_amd64.deb) |
-| **Fedora 42+** | [`.rpm`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo-0.2.3-1.fc42.x86_64.rpm) |
-| **Arch, Manjaro, EndeavourOS** | [`.pkg.tar.zst`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo-0.2.3-1-x86_64.pkg.tar.zst) |
-| **Any Linux (glibc 2.39+)** | [AppImage](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/Extendo-0.2.3-x86_64.AppImage) · [Portable `.tar.gz`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.3/extendo-0.2.3-linux-x86_64.tar.gz) |
+| **Windows 10 / 11** | [Installer `.exe`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-windows-x64-setup.exe) · [Portable `.zip`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-windows-x64-portable.zip) |
+| **Ubuntu 26.04** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo_0.2.4-1_amd64.deb) |
+| **Ubuntu 24.04, Mint 22** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo_0.2.4-1.ubuntu24.04_amd64.deb) |
+| **Fedora 42+** | [`.rpm`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-1.fc42.x86_64.rpm) |
+| **Arch, Manjaro, EndeavourOS** | [`.pkg.tar.zst`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-1-x86_64.pkg.tar.zst) |
+| **Any Linux (glibc 2.39+)** | [AppImage](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/Extendo-0.2.4-x86_64.AppImage) · [Portable `.tar.gz`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-linux-x86_64.tar.gz) |
 | **Android 7+** | [`.apk`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.0/extendo-0.2.0-android.apk) |
 
 > [!NOTE]
@@ -211,5 +211,7 @@ GitHub Actions builds every format on each push to `main`.
 ## Credits
 
 Extendo is designed and built by **[Md Hafijur Rahman](https://github.com/Hafij-BGE)**.
+
+Licensed under the MIT license (see [LICENSE](LICENSE)); third-party credits are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Built with [egui](https://github.com/emilk/egui), [OpenH264](https://github.com/cisco/openh264), [rustls](https://github.com/rustls/rustls) and Jetpack Compose. Extendo Mirror is based on [scrcpy](https://github.com/Genymobile/scrcpy) (Apache 2.0). Windows extend uses [Parsec Virtual Display Driver](https://github.com/nomi-san/parsec-vdd).

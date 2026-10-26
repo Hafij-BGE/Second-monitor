@@ -46,6 +46,8 @@ stage_files() {
     install -Dm644 "$WORK/assets/extendo-512.png" "$root/usr/share/icons/hicolor/512x512/apps/extendo.png"
     install -Dm644 "$WORK/assets/extendo-icon.svg" "$root/usr/share/icons/hicolor/scalable/apps/extendo.svg"
     install -Dm644 "$WORK/host/packaging/mirror/LICENSE-scrcpy" "$root/usr/share/doc/extendo/LICENSE-scrcpy"
+    install -Dm644 "$WORK/LICENSE" "$root/usr/share/doc/extendo/LICENSE"
+    install -Dm644 "$WORK/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/extendo/THIRD_PARTY_NOTICES.md"
 }
 
 # Gives the results to the user who owns the checkout.

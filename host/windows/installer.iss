@@ -9,7 +9,7 @@ AppName=Extendo
 AppVersion={#AppVersion}
 AppPublisher=Md Hafijur Rahman
 AppPublisherURL=https://github.com/Hafij-BGE
-AppCopyright=Md Hafijur Rahman
+AppCopyright=Md. Hafijur Rahman
 DefaultDirName={autopf}\Extendo
 DefaultGroupName=Extendo
 OutputDir=..\target\installer
@@ -31,6 +31,9 @@ Name: "startup"; Description: "Start Extendo in the background when I log in"; G
 Source: "..\target\release\extendo.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; scrcpy (Extendo Mirror) and adb (USB), downloaded by CI into windows\scrcpy.
 Source: "scrcpy\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
+
+Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Extendo"; Filename: "{app}\extendo.exe"

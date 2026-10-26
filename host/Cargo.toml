@@ -1,6 +1,6 @@
 [package]
 name = "extendo"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Extendo: use an Android tablet as a second monitor over USB or WiFi"
 license = "MIT"
@@ -84,4 +84,6 @@ assets = [
     ["packaging/mirror/extendo-mirror", "usr/lib/extendo/", "755"],
     ["packaging/mirror/scrcpy-server", "usr/lib/extendo/", "644"],
     ["packaging/mirror/LICENSE-scrcpy", "usr/share/doc/extendo/", "644"],
+    ["../LICENSE", "usr/share/doc/extendo/", "644"],
+    ["../THIRD_PARTY_NOTICES.md", "usr/share/doc/extendo/", "644"],
 ]

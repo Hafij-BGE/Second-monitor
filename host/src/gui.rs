@@ -1289,20 +1289,33 @@ impl App {
     fn footer(&mut self, ui: &mut Ui) {
         let p = self.palette();
         ui.add_space(16.0);
-        ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new(format!(
-                    "Extendo {} · Made by Md Hafijur Rahman",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .size(12.0)
-                .color(p.muted),
-            );
-            ui.hyperlink_to(
-                RichText::new("github.com/Hafij-BGE").size(12.0),
-                "https://github.com/Hafij-BGE",
-            );
-        });
+        egui::CollapsingHeader::new(RichText::new("About").color(p.muted))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(RichText::new(format!("Extendo {}", env!("CARGO_PKG_VERSION"))).color(p.text));
+                ui.label(RichText::new("Developed by Md. Hafijur Rahman").color(p.muted));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("GitHub:").color(p.muted));
+                    ui.hyperlink("https://github.com/Hafij-BGE/Second-monitor");
+                });
+                ui.label(RichText::new("License: MIT").color(p.muted));
+                ui.label(
+                    RichText::new(
+                        "Third-party software: scrcpy (Apache-2.0), OpenH264 (BSD-2-Clause), egui, rustls \
+                         and other Rust libraries (MIT/Apache-2.0), Parsec Virtual Display Driver on Windows. \
+                         See THIRD_PARTY_NOTICES.md in the GitHub repository.",
+                    )
+                    .size(12.0)
+                    .color(p.muted),
+                );
+                ui.label(
+                    RichText::new(
+                        "This app was generated with AI. Developer support may not be available.",
+                    )
+                    .size(12.0)
+                    .color(p.muted),
+                );
+            });
         ui.add_space(8.0);
     }
 
