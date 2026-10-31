@@ -43,13 +43,13 @@ Get the latest build from **[Releases](https://github.com/Hafij-BGE/Second-monit
 
 | Platform | Package |
 |---|---|
-| **Windows 10 / 11** | [Installer `.exe`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-windows-x64-setup.exe) · [Portable `.zip`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-windows-x64-portable.zip) |
-| **Ubuntu 26.04** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo_0.2.4-1_amd64.deb) |
-| **Ubuntu 24.04, Mint 22** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo_0.2.4-1.ubuntu24.04_amd64.deb) |
-| **Fedora 42+** | [`.rpm`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-1.fc42.x86_64.rpm) |
-| **Arch, Manjaro, EndeavourOS** | [`.pkg.tar.zst`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-1-x86_64.pkg.tar.zst) |
-| **Any Linux (glibc 2.39+)** | [AppImage](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/Extendo-0.2.4-x86_64.AppImage) · [Portable `.tar.gz`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.4/extendo-0.2.4-linux-x86_64.tar.gz) |
-| **Android 7+** | [`.apk`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.0/extendo-0.2.0-android.apk) |
+| **Windows 10 / 11** | [Installer `.exe`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-windows-x64-setup.exe) · [Portable `.zip`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-windows-x64-portable.zip) |
+| **Ubuntu 26.04** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo_0.2.5-1_amd64.deb) |
+| **Ubuntu 24.04, Mint 22** | [`.deb`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo_0.2.5-1.ubuntu24.04_amd64.deb) |
+| **Fedora 42+** | [`.rpm`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-1.fc42.x86_64.rpm) |
+| **Arch, Manjaro, EndeavourOS** | [`.pkg.tar.zst`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-1-x86_64.pkg.tar.zst) |
+| **Any Linux (glibc 2.39+)** | [AppImage](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/Extendo-0.2.5-x86_64.AppImage) · [Portable `.tar.gz`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-linux-x86_64.tar.gz) |
+| **Android 7+** | [`.apk`](https://github.com/Hafij-BGE/Second-monitor/releases/download/v0.2.5/extendo-0.2.5-android.apk) |
 
 > [!NOTE]
 > On Linux the PC side needs **GNOME** (Wayland or X11). Every release has a `SHA256SUMS.txt` to check the files.
