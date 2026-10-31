@@ -146,8 +146,16 @@ impl Out {
     }
 }
 
+/// Video the kernel may hold for a slow link. A full buffer blocks the
+/// sender, so stale frames get replaced instead of queueing up as delay
+/// (WiFi can buffer several seconds of video otherwise).
+const SEND_BUFFER: usize = 64 * 1024;
+
 fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> Result<()> {
     stream.set_nodelay(true)?;
+    if let Err(e) = socket2::SockRef::from(&stream).set_send_buffer_size(SEND_BUFFER) {
+        log::debug!("can't limit the send buffer: {e}");
+    }
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     let (tls_reader, mut tls_writer) = tls::accept(stream.try_clone()?, identity.config.clone())
         .context("encryption handshake")?;

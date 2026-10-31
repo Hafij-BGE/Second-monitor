@@ -9,10 +9,12 @@ apt-get update -qq
 apt-get install -y -qq build-essential curl file patch pkg-config clang libclang-dev \
     nasm meson ninja-build libpipewire-0.3-dev libspa-0.2-dev libsdl2-dev \
     libavcodec-dev libavdevice-dev libavformat-dev libavutil-dev libswresample-dev \
-    libusb-1.0-0-dev >/dev/null
+    libusb-1.0-0-dev libv4l-dev wget autoconf automake libtool >/dev/null
 
 install_rust
 copy_source
+# Minimal static FFmpeg in the mirror engine keeps the bundle small.
+export MIRROR_STATIC=1
 build_extendo
 
 V=$(version)

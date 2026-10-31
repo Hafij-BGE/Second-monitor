@@ -326,7 +326,7 @@ impl Duplicator {
         let mut last_loss: Option<Instant> = None;
         let mut backoff = Duration::from_millis(200);
         loop {
-            let Err(e) = self.capture(slot, rect, running) else {
+            let Err(e) = self.capture(slot, running) else {
                 return Ok(());
             };
             if !running.load(Ordering::Relaxed) {
@@ -374,12 +374,7 @@ impl Duplicator {
         }
     }
 
-    fn capture(
-        &mut self,
-        slot: &FrameSlot,
-        rect: &Mutex<RECT>,
-        running: &AtomicBool,
-    ) -> Result<()> {
+    fn capture(&mut self, slot: &FrameSlot, running: &AtomicBool) -> Result<()> {
         let mut checked = Instant::now();
         while running.load(Ordering::Relaxed) {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();

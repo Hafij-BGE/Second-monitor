@@ -291,7 +291,9 @@ mod tray {
                 let rgba = icon_rgba(size)?;
                 // ARGB32 in network byte order.
                 let data = rgba
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .flat_map(|p| [p[3], p[0], p[1], p[2]])
                     .collect();
                 Some(ksni::Icon {
@@ -494,17 +496,6 @@ mod tray {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
-mod tray {
-    use super::*;
-
-    pub fn start() -> Result<()> {
-        anyhow::bail!("not supported here")
-    }
-
-    pub fn stop() {}
-}
-
 // ---------------------------------------------------------------------------
 // Start at login
 
@@ -621,19 +612,6 @@ mod login {
             .context("can't add Extendo to startup")?;
         }
         Ok(())
-    }
-}
-
-#[cfg(not(any(target_os = "linux", windows)))]
-mod login {
-    use super::*;
-
-    pub fn enabled() -> bool {
-        false
-    }
-
-    pub fn set(_on: bool) -> Result<()> {
-        anyhow::bail!("not supported here")
     }
 }
 

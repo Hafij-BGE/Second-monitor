@@ -1,7 +1,7 @@
 //! USB mode: keeps `adb reverse tcp:PORT tcp:PORT` set up for every attached
 //! device, so the app can reach the host at 127.0.0.1 over the USB cable.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -23,14 +23,24 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
         .name("adb".into())
         .spawn(move || {
             let mut reversed: HashSet<String> = HashSet::new();
+            // Per-serial `adb tcpip` state; re-read on the slow checks only.
+            let mut tcp: HashMap<String, bool> = HashMap::new();
+            let mut tick: u32 = 0;
             loop {
+                tick = tick.wrapping_add(1);
                 if !shared.settings().usb {
                     reversed.clear();
                     shared.update_status(|s| s.usb_devices.clear());
                     thread::sleep(Duration::from_secs(2));
                     continue;
                 }
-                let devices = list_devices(&adb);
+                // Every 10 s, re-check what rarely changes; only `adb devices`
+                // runs on the other ticks.
+                let slow = tick % 5 == 1;
+                if slow {
+                    tcp.clear();
+                }
+                let devices = list_devices(&adb, &mut tcp);
                 {
                     let mut status = shared.status();
                     if status.usb_devices != devices {
@@ -41,19 +51,21 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
                 }
                 let serials: Vec<String> = devices.into_iter().map(|d| d.serial).collect();
                 reversed.retain(|s| serials.contains(s));
+                tcp.retain(|s, _| serials.contains(s));
                 // If the adb server restarted (another tool can do that), the
                 // tunnels are gone: check and set them up again.
                 let spec = format!("tcp:{port}");
-                reversed.retain(|s| {
-                    run(&adb, &["-s", s, "reverse", "--list"])
-                        .map(|list| list.contains(&spec))
-                        .unwrap_or(false)
-                });
+                if slow {
+                    reversed.retain(|s| {
+                        run(&adb, &["-s", s, "reverse", "--list"])
+                            .map(|list| list.contains(&spec))
+                            .unwrap_or(false)
+                    });
+                }
                 for serial in serials {
                     if reversed.contains(&serial) {
                         continue;
                     }
-                    let spec = format!("tcp:{port}");
                     let ok = command(&adb)
                         .args(["-s", &serial, "reverse", &spec, &spec])
                         .status()
@@ -70,8 +82,9 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
         .expect("spawn adb thread");
 }
 
-/// Devices adb can talk to, over USB or WiFi (`adb connect`).
-pub fn list_devices(adb: &PathBuf) -> Vec<AdbDevice> {
+/// Devices adb can talk to, over USB or WiFi (`adb connect`). `tcp` caches
+/// the `adb tcpip` state per serial.
+fn list_devices(adb: &PathBuf, tcp: &mut HashMap<String, bool>) -> Vec<AdbDevice> {
     let Ok(out) = command(adb).args(["devices", "-l"]).output() else {
         return Vec::new();
     };
@@ -89,7 +102,10 @@ pub fn list_devices(adb: &PathBuf) -> Vec<AdbDevice> {
                     // `adb connect` devices are named ip:port; wireless
                     // debugging ones contain "_adb-tls-connect".
                     let wifi = serial.contains(':') || serial.contains("adb-tls");
-                    let wifi_debugging = wifi || tcp_port_open(adb, serial);
+                    let wifi_debugging = wifi
+                        || *tcp
+                            .entry(serial.to_string())
+                            .or_insert_with(|| tcp_port_open(adb, serial));
                     devices.push(AdbDevice {
                         serial: serial.to_string(),
                         model,

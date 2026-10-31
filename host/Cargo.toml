@@ -10,9 +10,9 @@ repository = "https://github.com/Hafij-BGE/Second-monitor"
 [dependencies]
 anyhow = "1"
 arboard = { version = "3", default-features = false }
-clap = { version = "4", features = ["derive"] }
 dirs = "7"
-eframe = "0.36"
+# glow (OpenGL) instead of the default wgpu: far smaller binary and less RAM.
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "links", "wayland", "x11"] }
 egui = "0.36"
 if-addrs = "0.15"
 log = "0.4"
@@ -22,12 +22,14 @@ rfd = "0.17"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "0.10"
+socket2 = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.10"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+winit = "0.30" # default features: client-side title bar on GNOME Wayland
 ksni = { version = "0.3", default-features = false, features = ["blocking", "async-io"] }
 
 [target.'cfg(windows)'.dependencies]

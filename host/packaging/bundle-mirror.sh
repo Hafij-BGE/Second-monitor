@@ -23,7 +23,21 @@ rm -rf "scrcpy-$VERSION"
 tar xzf scrcpy.tar.gz
 cd "scrcpy-$VERSION"
 patch -p1 < "$HERE/extendo-navbar.patch"
-meson setup build --buildtype=release --strip -Db_lto=true -Dcompile_server=false >/dev/null
+if [ "${MIRROR_STATIC:-0}" = 1 ]; then
+    # Portable builds (AppImage, tar.gz): link scrcpy's own minimal static
+    # FFmpeg/SDL/libusb, as upstream does, instead of bundling the distro's
+    # full FFmpeg (over 200 MB of codecs the mirror never uses). Extra tools:
+    # wget autoconf automake libtool libv4l-dev.
+    for dep in sdl dav1d ffmpeg libusb; do
+        app/deps/$dep.sh linux native static >/dev/null
+    done
+    DEPS="$PWD/app/deps/work/install/linux-native-static"
+    meson setup build --buildtype=release --strip -Db_lto=true -Dcompile_server=false \
+        --pkg-config-path="$DEPS/lib/pkgconfig" -Dc_args="-I$DEPS/include" \
+        -Dc_link_args="-L$DEPS/lib" -Dstatic=true >/dev/null
+else
+    meson setup build --buildtype=release --strip -Db_lto=true -Dcompile_server=false >/dev/null
+fi
 ninja -C build >/dev/null
 install -m 755 build/app/scrcpy "$OUT/extendo-mirror"
 

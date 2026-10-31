@@ -19,66 +19,107 @@ mod state;
 mod storage;
 mod tls;
 
-use anyhow::Result;
-use clap::Parser;
+use anyhow::{bail, Context, Result};
 
 use backend::Mode;
 use state::{Settings, Shared};
 
-/// Use an Android phone or tablet as a second monitor over USB or WiFi.
-///
-/// Opens a window by default. Options given here override the saved
-/// settings for this run.
-#[derive(Parser, Debug)]
-#[command(version)]
+const HELP: &str = "\
+Use an Android phone or tablet as a second monitor over USB or WiFi.
+
+Opens a window by default. Options given here override the saved
+settings for this run.
+
+Usage: extendo [OPTIONS]
+
+Options:
+      --headless           Run without a window (logs to the terminal)
+      --background         Start with the window closed; Extendo keeps running in the tray
+      --list               List monitors and exit
+      --port <PORT>        TCP port the Android app connects to
+      --mode <MODE>        extend: add a virtual monitor. mirror: show an existing monitor
+      --monitor <MONITOR>  Monitor to capture: connector name on Linux (e.g. eDP-1),
+                           index on Windows. See --list
+      --fps <FPS>          Default frames per second
+      --bitrate <MBIT>     Default video bitrate in Mbit/s
+      --scale <SCALE>      Divide the device resolution by this (1.5 makes text bigger)
+      --no-usb             Don't set up USB (adb reverse)
+      --no-discovery       Don't accept WiFi connections
+  -h, --help               Print help
+  -V, --version            Print version
+";
+
+#[derive(Debug, Default)]
 struct Args {
-    /// Run without a window (logs to the terminal).
-    #[arg(long)]
     headless: bool,
-
-    /// Start with the window closed; Extendo keeps running in the tray.
-    #[arg(long, conflicts_with = "headless")]
     background: bool,
-
-    /// List monitors and exit.
-    #[arg(long)]
     list: bool,
-
-    /// TCP port the Android app connects to.
-    #[arg(long)]
     port: Option<u16>,
-
-    /// extend: add a virtual monitor. mirror: show an existing monitor.
-    #[arg(long, value_enum)]
     mode: Option<Mode>,
-
-    /// Monitor to capture: connector name on Linux (e.g. eDP-1), index on Windows. See --list.
-    #[arg(long)]
     monitor: Option<String>,
-
-    /// Default frames per second.
-    #[arg(long)]
     fps: Option<u32>,
-
-    /// Default video bitrate in Mbit/s.
-    #[arg(long)]
     bitrate: Option<u32>,
-
-    /// Divide the device resolution by this (1.5 makes text bigger).
-    #[arg(long)]
     scale: Option<f32>,
-
-    /// Don't set up USB (adb reverse).
-    #[arg(long)]
     no_usb: bool,
-
-    /// Don't accept WiFi connections.
-    #[arg(long)]
     no_discovery: bool,
 }
 
+impl Args {
+    fn parse() -> Result<Self> {
+        let mut args = Args::default();
+        let mut it = std::env::args().skip(1);
+        while let Some(arg) = it.next() {
+            let (name, inline) = match arg.split_once('=') {
+                Some((n, v)) => (n.to_string(), Some(v.to_string())),
+                None => (arg, None),
+            };
+            let mut value = || -> Result<String> {
+                inline
+                    .clone()
+                    .or_else(|| it.next())
+                    .with_context(|| format!("{name} needs a value"))
+            };
+            fn num<T: std::str::FromStr>(name: &str, v: String) -> Result<T> {
+                v.parse().ok().with_context(|| format!("invalid value '{v}' for {name}"))
+            }
+            match name.as_str() {
+                "--headless" => args.headless = true,
+                "--background" => args.background = true,
+                "--list" => args.list = true,
+                "--no-usb" => args.no_usb = true,
+                "--no-discovery" => args.no_discovery = true,
+                "--port" => args.port = Some(num(&name, value()?)?),
+                "--fps" => args.fps = Some(num(&name, value()?)?),
+                "--bitrate" => args.bitrate = Some(num(&name, value()?)?),
+                "--scale" => args.scale = Some(num(&name, value()?)?),
+                "--monitor" => args.monitor = Some(value()?),
+                "--mode" => {
+                    args.mode = Some(match value()?.as_str() {
+                        "extend" => Mode::Extend,
+                        "mirror" => Mode::Mirror,
+                        v => bail!("invalid value '{v}' for --mode (extend or mirror)"),
+                    })
+                }
+                "-h" | "--help" => {
+                    print!("{HELP}");
+                    std::process::exit(0);
+                }
+                "-V" | "--version" => {
+                    println!("extendo {}", env!("CARGO_PKG_VERSION"));
+                    std::process::exit(0);
+                }
+                _ => bail!("unexpected argument '{name}'; see --help"),
+            }
+        }
+        if args.headless && args.background {
+            bail!("--background can't be used with --headless");
+        }
+        Ok(args)
+    }
+}
+
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let args = Args::parse()?;
     platform_init(args.headless || args.list);
     logging::init();
 

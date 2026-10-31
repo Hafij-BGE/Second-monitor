@@ -1118,13 +1118,12 @@ impl App {
         self.card(ui, "PHONE MIRROR SHORTCUTS", |_, ui| {
             ui.label(RichText::new("Use these in the mirror window. Alt can be replaced by the Super (Windows) key.").color(p.muted));
             ui.add_space(6.0);
-            shortcut_grid(ui, p, "mirror_keys", mirror::SHORTCUTS);
+            shortcut_grid(ui, p, mirror::SHORTCUTS);
         });
         self.card(ui, "TABLET GESTURES (SECOND SCREEN)", |_, ui| {
             shortcut_grid(
                 ui,
                 p,
-                "tablet_keys",
                 &[
                     (
                         "Edge handle ‹",
@@ -1151,7 +1150,6 @@ impl App {
             shortcut_grid(
                 ui,
                 p,
-                "window_keys",
                 &[
                     (
                         "Drop files on the window",
@@ -1422,40 +1420,6 @@ impl eframe::App for App {
         self.pairing_dialog(&ctx);
         // Refresh stats even when no other event arrives.
         ctx.request_repaint_after(Duration::from_secs(1));
-        debug_screenshot(&ctx);
-    }
-}
-
-/// `SMON_SCREENSHOT=out.ppm` saves the window once, for checking the layout.
-fn debug_screenshot(ctx: &egui::Context) {
-    let Some(path) = std::env::var_os("SMON_SCREENSHOT") else {
-        return;
-    };
-    let frame = ctx.cumulative_frame_nr();
-    if frame == 30 {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-    }
-    if frame < 25 {
-        ctx.request_repaint();
-    }
-    let shots: Vec<Arc<egui::ColorImage>> = ctx.input(|i| {
-        i.raw
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-            .collect()
-    });
-    for image in shots {
-        let [w, h] = image.size;
-        let mut ppm = format!("P6 {w} {h} 255\n").into_bytes();
-        for px in &image.pixels {
-            ppm.extend_from_slice(&[px.r(), px.g(), px.b()]);
-        }
-        let _ = std::fs::write(&path, ppm);
-        log::info!("screenshot saved to {}", PathBuf::from(&path).display());
     }
 }
 
@@ -1482,7 +1446,7 @@ fn stat(ui: &mut Ui, p: &Palette, value: &str, label: &str) {
         });
 }
 
-fn shortcut_grid(ui: &mut Ui, p: &Palette, _id: &str, rows: &[(&str, &str)]) {
+fn shortcut_grid(ui: &mut Ui, p: &Palette, rows: &[(&str, &str)]) {
     // Keys column scales with the window; descriptions wrap.
     let key_width = (ui.available_width() * 0.42).clamp(120.0, 240.0);
     for (i, (keys, what)) in rows.iter().enumerate() {

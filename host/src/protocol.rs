@@ -6,11 +6,8 @@
 use std::io::{self, Read, Write};
 
 pub const MAGIC: &[u8; 4] = b"SMON";
-/// v2 added hello flags and cursor messages; v3 quality, device name,
-/// mouse/keyboard input, clipboard and files; v4 runs over TLS and adds a
-/// device id and pairing.
+/// v4 runs over TLS with a device id and pairing; older viewers are refused.
 pub const VERSION: u8 = 4;
-const MIN_VERSION: u8 = 4;
 
 /// Sent by the host after the client hello (v4).
 pub const AUTH_OK: u8 = 0;
@@ -72,39 +69,30 @@ pub fn read_client_hello(r: &mut impl Read) -> io::Result<ClientHello> {
         return Err(invalid("bad magic"));
     }
     let version = buf[4];
-    if !(MIN_VERSION..=VERSION).contains(&version) {
+    if version != VERSION {
         return Err(invalid(format!("unsupported protocol version {version}")));
     }
-    let mut hello = ClientHello {
+    let flags = read_u8(r)?;
+    let fps = read_u8(r)?;
+    let mut b = [0u8; 4];
+    r.read_exact(&mut b)?;
+    let bitrate_kbps = u32::from_be_bytes(b);
+    let len = read_u8(r)? as usize;
+    let mut name = vec![0u8; len];
+    r.read_exact(&mut name)?;
+    let mut id = [0u8; 16];
+    r.read_exact(&mut id)?;
+    Ok(ClientHello {
         version,
         width: u16::from_be_bytes([buf[5], buf[6]]),
         height: u16::from_be_bytes([buf[7], buf[8]]),
         dpi: u16::from_be_bytes([buf[9], buf[10]]),
-        flags: 0,
-        fps: 0,
-        bitrate_kbps: 0,
-        name: String::new(),
-        device_id: String::new(),
-    };
-    if version >= 2 {
-        hello.flags = read_u8(r)?;
-    }
-    if version >= 3 {
-        hello.fps = read_u8(r)?;
-        let mut b = [0u8; 4];
-        r.read_exact(&mut b)?;
-        hello.bitrate_kbps = u32::from_be_bytes(b);
-        let len = read_u8(r)? as usize;
-        let mut name = vec![0u8; len];
-        r.read_exact(&mut name)?;
-        hello.name = String::from_utf8_lossy(&name).into_owned();
-    }
-    if version >= 4 {
-        let mut id = [0u8; 16];
-        r.read_exact(&mut id)?;
-        hello.device_id = id.iter().map(|b| format!("{b:02x}")).collect();
-    }
-    Ok(hello)
+        flags,
+        fps,
+        bitrate_kbps,
+        name: String::from_utf8_lossy(&name).into_owned(),
+        device_id: id.iter().map(|b| format!("{b:02x}")).collect(),
+    })
 }
 
 /// `version` echoes the client's, so older viewers still accept the reply.

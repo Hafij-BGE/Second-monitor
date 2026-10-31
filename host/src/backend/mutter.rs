@@ -197,12 +197,11 @@ pub fn start(req: &CaptureRequest) -> Result<Capture> {
 fn wait_for_node(signals: MessageIterator) -> Result<u32> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        for msg in signals {
+        if let Some(msg) = signals.into_iter().next() {
             let result = msg
                 .map_err(anyhow::Error::from)
                 .and_then(|m| m.body().deserialize::<u32>().map_err(Into::into));
             let _ = tx.send(result);
-            return;
         }
     });
     rx.recv_timeout(Duration::from_secs(10))
@@ -294,8 +293,17 @@ impl InputSink for MutterInput {
                 &(slot,),
             ),
         };
+        if !matches!(t.action, TouchAction::Move) {
+            log::debug!("touch {:?} #{slot} at {x:.0},{y:.0} ({w}x{h})", t.action);
+        }
         if let Err(e) = result {
-            log::debug!("touch injection failed: {e:#}");
+            // Say it once where people look; repeats would flood the log.
+            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!("touch input doesn't work: {e:#}");
+            } else {
+                log::debug!("touch injection failed: {e:#}");
+            }
         }
     }
 
@@ -455,7 +463,7 @@ fn read_cursor(buffer: &pw::buffer::Buffer, state: &mut StreamState) -> Option<C
                     rgba.extend_from_slice(line);
                 }
                 if swap_rb {
-                    for px in rgba.chunks_exact_mut(4) {
+                    for px in rgba.as_chunks_mut::<4>().0 {
                         px.swap(0, 2);
                     }
                 }
@@ -585,7 +593,7 @@ fn run_pipewire(
                 bgra.extend_from_slice(&bytes[start..start + w * 4]);
             }
             if swap_rb {
-                for px in bgra.chunks_exact_mut(4) {
+                for px in bgra.as_chunks_mut::<4>().0 {
                     px.swap(0, 2);
                 }
             }

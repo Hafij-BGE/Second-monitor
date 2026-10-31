@@ -31,9 +31,7 @@ pub struct Frame {
     pub bgra: Vec<u8>,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Mode {
     /// Add a new virtual monitor (Linux: GNOME virtual monitor; Windows: one
     /// from a virtual display driver, else a non-primary monitor).

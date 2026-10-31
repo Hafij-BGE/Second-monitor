@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -43,6 +44,9 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
     private val ui = Handler(Looper.getMainLooper())
 
     private var client: StreamClient? = null
+    // Keeps the tablet's WiFi out of power saving while the stream shows;
+    // otherwise it dozes between packets and frames and touches arrive late.
+    private var wifiLock: WifiManager.WifiLock? = null
     private var surfaceReady = false
     private var cursorImage: CursorImage? = null
     private var videoWidth = 0
@@ -191,11 +195,31 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
     override fun onStart() {
         super.onStart()
         if (settings.clipboardSync) clipboard.addPrimaryClipChangedListener(clipListener)
+        holdWifi()
     }
 
     override fun onStop() {
         clipboard.removePrimaryClipChangedListener(clipListener)
+        wifiLock?.takeIf { it.isHeld }?.release()
+        wifiLock = null
         super.onStop()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun holdWifi() {
+        if (wifiLock?.isHeld == true) return
+        val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = runCatching {
+            wifi.createWifiLock(mode, "extendo:stream").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }.onFailure { Log.w(TAG, "WiFi lock unavailable", it) }.getOrNull()
     }
 
     override fun onDestroy() {
