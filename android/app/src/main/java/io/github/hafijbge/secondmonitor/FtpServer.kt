@@ -1,12 +1,10 @@
 package io.github.hafijbge.secondmonitor
 
 import android.util.Log
-import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.InputStreamReader
 import java.io.OutputStream
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -84,7 +82,9 @@ class FtpServer(
                 thread(name = "ftp-session", isDaemon = true) {
                     try {
                         Session(client).run()
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
+                        // Throwable, not just Exception: nothing a client sends
+                        // may take the whole app down (e.g. OutOfMemoryError).
                         Log.d(TAG, "session ended", e)
                     } finally {
                         clients.remove(client)
@@ -103,7 +103,7 @@ class FtpServer(
     }
 
     private inner class Session(private val socket: Socket) {
-        private val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+        private val reader = FtpLineReader(java.io.BufferedInputStream(socket.getInputStream()))
         private val out: OutputStream = socket.getOutputStream()
         private var userOk = false
         private var loggedIn = false
@@ -398,6 +398,8 @@ class FtpServer(
         private const val MAX_FAILURES = 5
         private const val FAILURE_WINDOW_MS = 10 * 60 * 1000L
         private const val LOCKOUT_MS = 5 * 60 * 1000L
+        /** Longest command line accepted; longer drops the client. */
+        const val MAX_LINE = 8192
         private const val IDLE_TIMEOUT_MS = 10 * 60 * 1000
 
         private fun stamp(time: Long): String = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
@@ -418,6 +420,29 @@ class FtpServer(
             val perms = if (f.isDirectory) "drwxr-xr-x" else "-rw-r--r--"
             val size = if (f.isFile) f.length() else 4096
             return "$perms 1 phone phone %13d %s %s".format(Locale.US, size, when_, f.name)
+        }
+    }
+}
+
+/**
+ * Reads FTP control lines as UTF-8 without the CR/LF, like
+ * BufferedReader.readLine (ends on LF, CR or CRLF), but gives up with null
+ * once a line passes [max] bytes, so a client that never sends a newline
+ * can't fill the memory. Null also at end of stream.
+ */
+internal class FtpLineReader(private val inp: java.io.InputStream, private val max: Int = FtpServer.MAX_LINE) {
+    private var skipLf = false
+
+    fun readLine(): String? {
+        val buf = java.io.ByteArrayOutputStream(128)
+        while (true) {
+            val b = inp.read()
+            if (b < 0) return if (buf.size() == 0) null else buf.toString("UTF-8")
+            if (skipLf) { skipLf = false; if (b == '\n'.code) continue }
+            if (b == '\n'.code) return buf.toString("UTF-8")
+            if (b == '\r'.code) { skipLf = true; return buf.toString("UTF-8") }
+            if (buf.size() >= max) return null
+            buf.write(b)
         }
     }
 }
