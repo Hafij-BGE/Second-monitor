@@ -42,6 +42,7 @@ stage_files() {
     install -Dm755 "$WORK/host/packaging/mirror/extendo-mirror" "$root/usr/lib/extendo/extendo-mirror"
     install -Dm644 "$WORK/host/packaging/mirror/scrcpy-server" "$root/usr/lib/extendo/scrcpy-server"
     install -Dm644 "$WORK/host/packaging/extendo.desktop" "$root/usr/share/applications/extendo.desktop"
+    install -Dm644 "$WORK/host/packaging/70-extendo-uinput.rules" "$root/usr/lib/udev/rules.d/70-extendo-uinput.rules"
     install -Dm644 "$WORK/assets/extendo-256.png" "$root/usr/share/icons/hicolor/256x256/apps/extendo.png"
     install -Dm644 "$WORK/assets/extendo-512.png" "$root/usr/share/icons/hicolor/512x512/apps/extendo.png"
     install -Dm644 "$WORK/assets/extendo-icon.svg" "$root/usr/share/icons/hicolor/scalable/apps/extendo.svg"

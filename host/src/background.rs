@@ -102,11 +102,28 @@ pub fn claim(show: bool) -> Instance {
     Instance::First
 }
 
+/// Asks the running copy to do something (`extendo --toggle-mode`).
+/// Returns false when Extendo isn't running.
+pub fn tell_running(command: &str) -> bool {
+    ipc::connect()
+        .and_then(|mut s| {
+            s.write_all(format!("{command}\n").as_bytes())
+                .map_err(Into::into)
+        })
+        .is_ok()
+}
+
 fn handle_client(stream: impl Read) {
     let mut line = String::new();
     let mut reader = BufReader::new(stream.take(64));
-    if reader.read_line(&mut line).is_ok() && line.trim() == "show" {
-        send(Request::Show);
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    match line.trim() {
+        "show" => send(Request::Show),
+        "toggle-mode" => crate::hotkeys::run(crate::hotkeys::Action::ToggleMode),
+        "disconnect" => crate::hotkeys::run(crate::hotkeys::Action::Disconnect),
+        _ => {}
     }
 }
 
@@ -500,7 +517,7 @@ mod tray {
 // Start at login
 
 /// The command that starts this copy of Extendo in the background.
-fn launch_path() -> Result<std::path::PathBuf> {
+pub fn launch_path() -> Result<std::path::PathBuf> {
     // An AppImage runs from a temporary mount; start the AppImage itself.
     if let Some(appimage) = std::env::var_os("APPIMAGE") {
         return Ok(appimage.into());

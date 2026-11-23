@@ -11,8 +11,15 @@ use egui::{
 
 use crate::backend::{self, Mode};
 use crate::files::human_size;
-use crate::state::{AdbDevice, PairingDecision, SessionCommand, Shared, TransferState};
-use crate::{mirror, storage};
+use crate::state::{
+    AdbDevice, PairingDecision, PenSupport, SessionCommand, Shared, TransferState, WifiPairState,
+};
+use crate::{mirror, storage, wifi_pair};
+
+const ANDROID_APP_URL: &str = "https://github.com/Hafij-BGE/Second-monitor/releases/latest";
+/// Lets pen pressure reach /dev/uinput; the .deb installs the same rule.
+#[cfg(target_os = "linux")]
+const UINPUT_FIX: &str = "echo 'KERNEL==\"uinput\", SUBSYSTEM==\"misc\", TAG+=\"uaccess\", OPTIONS+=\"static_node=uinput\"' | sudo tee /etc/udev/rules.d/70-extendo-uinput.rules && sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -102,6 +109,13 @@ struct App {
     /// Text fields.
     mirror_address: String,
     storage_address: String,
+    /// Page of the first-run guide.
+    welcome_step: usize,
+    /// QR code shown for pairing a phone over WiFi.
+    wifi_pairing: Option<wifi_pair::Pairing>,
+    /// GNOME keyboard shortcuts: None = not GNOME, Some(added).
+    #[cfg(target_os = "linux")]
+    gnome_shortcuts: Option<bool>,
 }
 
 impl App {
@@ -130,6 +144,11 @@ impl App {
             mirror_address: String::new(),
             storage_address: String::new(),
             pairing_seen: None,
+            welcome_step: 0,
+            wifi_pairing: None,
+            #[cfg(target_os = "linux")]
+            gnome_shortcuts: crate::hotkeys::gnome::available()
+                .then(crate::hotkeys::gnome::installed),
         }
     }
 
@@ -216,9 +235,7 @@ impl App {
     }
 
     fn update_setting(&self, f: impl FnOnce(&mut crate::state::Settings)) {
-        let mut s = self.shared.settings.lock().unwrap();
-        f(&mut s);
-        s.save();
+        self.shared.update_settings(f);
     }
 
     fn header(&mut self, ui: &mut Ui) {
@@ -282,6 +299,49 @@ impl App {
                         ui.label(
                             RichText::new(format!("{} × {}", v.width, v.height)).color(p.muted),
                         );
+                    }
+                    if let Some(d) = v.device_status {
+                        let mut parts = Vec::new();
+                        if let Some(b) = d.battery {
+                            let charging = if d.charging { " ⚡ charging" } else { "" };
+                            parts.push(format!("Battery {b}%{charging}"));
+                        }
+                        if let Some(t) = d.temperature {
+                            parts.push(format!("{t:.1} °C"));
+                        }
+                        let low = d.battery.is_some_and(|b| b <= 15) && !d.charging;
+                        let hot = d.temperature.is_some_and(|t| t >= 42.0);
+                        if !parts.is_empty() {
+                            let color = if low || hot { p.warn } else { p.muted };
+                            ui.label(RichText::new(parts.join(" · ")).color(color))
+                                .on_hover_text("Reported by the tablet");
+                        }
+                    }
+                    match v.pen {
+                        PenSupport::Ready => {
+                            ui.label(RichText::new("✏ Pen pressure on").color(p.good)).on_hover_text(
+                                "The tablet's stylus works as a drawing tablet with pressure and tilt (Krita, GIMP, …).",
+                            );
+                        }
+                        PenSupport::NeedsSetup => {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new("✏ Pen pressure needs a one-time setup.")
+                                        .color(p.warn),
+                                );
+                                #[cfg(target_os = "linux")]
+                                if ui
+                                    .small_button("Copy the command")
+                                    .on_hover_text(format!(
+                                        "Run it in a terminal, then reconnect:\n{UINPUT_FIX}"
+                                    ))
+                                    .clicked()
+                                {
+                                    ui.ctx().copy_text(UINPUT_FIX.to_string());
+                                }
+                            });
+                        }
+                        PenSupport::Unsupported => {}
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -390,7 +450,8 @@ impl App {
     fn display_card(&mut self, ui: &mut Ui) {
         let p = self.palette();
         let s = self.shared.settings();
-        let connected = self.shared.status().viewer.is_some();
+        let viewer_name = self.shared.status().viewer.as_ref().map(|v| v.name.clone());
+        let connected = viewer_name.is_some();
         self.card(ui, "DISPLAY", |app, ui| {
             egui::Grid::new("display")
                 .num_columns(2)
@@ -574,6 +635,23 @@ impl App {
                     });
             }
             ui.add_space(4.0);
+            let owner = match &viewer_name {
+                Some(name) => Some(name.clone()),
+                None => s
+                    .profiles
+                    .iter()
+                    .find(|p| p.id == s.last_device)
+                    .map(|p| p.name.clone()),
+            };
+            if let Some(name) = owner.filter(|_| s.profiles.len() > 1 || connected) {
+                ui.label(
+                    RichText::new(format!(
+                        "Saved for {name}: each tablet keeps its own display settings."
+                    ))
+                    .size(12.0)
+                    .color(p.muted),
+                );
+            }
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Changes apply on the next connection.")
@@ -613,10 +691,12 @@ impl App {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Received files:").color(p.muted));
-                ui.label(
-                    RichText::new(settings.save_dir.display().to_string())
-                        .font(FontId::monospace(12.0)),
-                );
+                let dir = settings.save_dir.display().to_string();
+                ui.add(
+                    egui::Label::new(RichText::new(&dir).font(FontId::monospace(12.0)))
+                        .truncate(),
+                )
+                .on_hover_text(dir);
             });
             ui.horizontal(|ui| {
                 if ui.small_button("📂 Open folder").clicked() {
@@ -727,6 +807,20 @@ impl App {
                 }
                 ui.label(RichText::new("restart to apply").size(12.0).color(p.muted));
             });
+            let mut autostart = s.usb_autostart;
+            if ui
+                .checkbox(
+                    &mut autostart,
+                    "⚡  Open the tablet app when the tablet is plugged in (USB)",
+                )
+                .on_hover_text(
+                    "Works for tablets that connected over USB once. Needs Extendo 0.3 or newer on the tablet.",
+                )
+                .changed()
+            {
+                app.update_setting(|s| s.usb_autostart = autostart);
+            }
+            app.shortcut_options(ui, &s);
             ui.add_space(6.0);
             let mut background = s.run_in_background;
             if ui
@@ -765,6 +859,63 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Keyboard shortcuts that work in any app.
+    fn shortcut_options(&mut self, ui: &mut Ui, s: &crate::state::Settings) {
+        #[cfg(windows)]
+        {
+            let mut on = s.hotkeys;
+            if ui
+                .checkbox(
+                    &mut on,
+                    "⌨  Shortcuts: Ctrl+Alt+E switches Extend / Mirror, Ctrl+Alt+X disconnects",
+                )
+                .changed()
+            {
+                self.update_setting(|s| s.hotkeys = on);
+                crate::hotkeys::set_enabled(on);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = s;
+            let p = self.palette();
+            match self.gnome_shortcuts {
+                Some(added) => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("⌨  Shortcuts: Ctrl+Alt+E switches Extend / Mirror, Ctrl+Alt+X disconnects");
+                        let label = if added { "Remove" } else { "Add to GNOME" };
+                        if ui
+                            .small_button(label)
+                            .on_hover_text("Settings › Keyboard › Custom Shortcuts")
+                            .clicked()
+                        {
+                            let r = if added {
+                                crate::hotkeys::gnome::remove()
+                            } else {
+                                crate::hotkeys::gnome::install()
+                            };
+                            match r {
+                                Ok(()) => self.gnome_shortcuts = Some(!added),
+                                Err(e) => log::error!("keyboard shortcuts: {e:#}"),
+                            }
+                        }
+                    });
+                }
+                None => {
+                    ui.label(
+                        RichText::new(
+                            "⌨  Shortcuts: bind \"extendo --toggle-mode\" and \"extendo --disconnect\" in your desktop's keyboard settings.",
+                        )
+                        .size(12.0)
+                        .color(p.muted),
+                    );
+                }
+            }
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let _ = s;
     }
 
     fn tabs(&mut self, ui: &mut Ui) {
@@ -928,6 +1079,13 @@ impl App {
                     mirror::connect(app.shared.clone(), app.mirror_address.trim().to_string());
                 }
             });
+            if ui
+                .button("▦  Pair with a QR code (Android 11+)")
+                .on_hover_text("No cable needed: scan the code from the phone's Wireless debugging screen")
+                .clicked()
+            {
+                app.wifi_pairing = wifi_pair::start(app.shared.clone());
+            }
             let offline: Vec<&String> = settings
                 .wifi_phones
                 .iter()
@@ -1146,6 +1304,23 @@ impl App {
                 ],
             );
         });
+        self.card(ui, "THIS PC (ANY APP)", |_, ui| {
+            let how = if cfg!(windows) {
+                "Turn them on or off under Screen › Options."
+            } else {
+                "Add them under Screen › Options (GNOME), or bind the commands in your desktop's keyboard settings."
+            };
+            ui.label(RichText::new(how).color(p.muted));
+            ui.add_space(6.0);
+            shortcut_grid(
+                ui,
+                p,
+                &[
+                    ("Ctrl+Alt+E", "Switch the tablet between Extend and Mirror (extendo --toggle-mode)"),
+                    ("Ctrl+Alt+X", "Disconnect the tablet (extendo --disconnect)"),
+                ],
+            );
+        });
         self.card(ui, "THIS WINDOW", |_, ui| {
             shortcut_grid(
                 ui,
@@ -1284,6 +1459,219 @@ impl App {
         });
     }
 
+    /// First start: what Extendo does and how to connect, in four short steps.
+    fn welcome_guide(&mut self, ctx: &egui::Context) {
+        let settings = self.shared.settings();
+        if settings.welcome_done || self.shared.status().pairing.is_some() {
+            return;
+        }
+        const STEPS: usize = 4;
+        let p = self.palette();
+        let addresses = self.addresses.clone();
+        let mut finish = false;
+        let response = egui::Modal::new(egui::Id::new("welcome")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.label(
+                RichText::new(format!("Step {} of {STEPS}", self.welcome_step + 1))
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.set_min_height(230.0);
+                let title = |ui: &mut Ui, text: &str| {
+                    ui.label(RichText::new(text).size(20.0).strong().color(p.text));
+                    ui.add_space(6.0);
+                };
+                match self.welcome_step {
+                    0 => {
+                        title(ui, "👋  Welcome to Extendo");
+                        ui.label(
+                            RichText::new("Use an Android tablet as a second screen for this PC, over a USB cable or WiFi.")
+                                .color(p.text),
+                        );
+                        ui.add_space(8.0);
+                        for (tab, what) in [
+                            ("🖥 Screen", "extend or mirror this PC onto the tablet"),
+                            ("📱 Mirror", "see and control a phone here, with sound"),
+                            ("📂 Storage", "open a phone's files like a USB drive"),
+                            ("⌨ Keys", "gestures and shortcuts"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(tab).strong().color(p.text));
+                                ui.label(RichText::new(what).color(p.muted));
+                            });
+                        }
+                    }
+                    1 => {
+                        title(ui, "📲  Install the tablet app");
+                        ui.label(
+                            RichText::new("The tablet needs the Extendo app (Android 7 or newer).")
+                                .color(p.text),
+                        );
+                        ui.add_space(6.0);
+                        ui.hyperlink_to(RichText::new("Download the Android app").strong(), ANDROID_APP_URL);
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("Install it on a phone too if you want to open its files from this PC.")
+                                .color(p.muted),
+                        );
+                    }
+                    2 => {
+                        title(ui, "🔗  Connect");
+                        ui.label(RichText::new("🔌 USB cable (lowest delay)").strong().color(p.text));
+                        ui.label(
+                            RichText::new("Turn on USB debugging once, plug in, then tap \"Connect over USB\" in the app. After that, the app opens by itself when you plug the tablet in.")
+                                .color(p.muted),
+                        );
+                        egui::CollapsingHeader::new("How to turn on USB debugging")
+                            .id_salt("welcome_usb")
+                            .show(ui, |ui| {
+                                for step in [
+                                    "1. On the tablet open Settings › About tablet.",
+                                    "2. Tap Build number seven times.",
+                                    "3. Open Settings › Developer options and turn on USB debugging.",
+                                    "4. Plug in the cable and allow this PC.",
+                                ] {
+                                    ui.label(RichText::new(step).color(p.text));
+                                }
+                            });
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("📶 WiFi").strong().color(p.text));
+                        ui.label(
+                            RichText::new("Same network as this PC: open the app and tap this PC. Allow it here when both screens show the same code.")
+                                .color(p.muted),
+                        );
+                        if !addresses.is_empty() {
+                            let list: Vec<String> = addresses
+                                .iter()
+                                .map(|ip| format!("{ip}:{}", settings.port))
+                                .collect();
+                            ui.label(
+                                RichText::new(format!("This PC: {}", list.join("   ")))
+                                    .font(FontId::monospace(12.0))
+                                    .color(p.accent),
+                            );
+                        }
+                    }
+                    _ => {
+                        title(ui, "✅  You're set");
+                        ui.label(
+                            RichText::new("Everything is in the tabs at the top: Screen, Mirror, Storage and Keys.")
+                                .color(p.text),
+                        );
+                        ui.add_space(6.0);
+                        if settings.run_in_background {
+                            ui.label(
+                                RichText::new("Closing the window keeps Extendo running in the tray, so tablets can still connect.")
+                                    .color(p.muted),
+                            );
+                        }
+                        ui.label(
+                            RichText::new("Each tablet keeps its own resolution, frame rate and quality.")
+                                .color(p.muted),
+                        );
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Skip").clicked() {
+                    finish = true;
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let last = self.welcome_step + 1 == STEPS;
+                    let label = if last { "Start" } else { "Next" };
+                    if ui
+                        .add(egui::Button::new(RichText::new(label).color(Color32::WHITE)).fill(p.accent))
+                        .clicked()
+                    {
+                        if last {
+                            finish = true;
+                        } else {
+                            self.welcome_step += 1;
+                        }
+                    }
+                    if self.welcome_step > 0 && ui.button("Back").clicked() {
+                        self.welcome_step -= 1;
+                    }
+                });
+            });
+        });
+        if finish || response.should_close() {
+            self.welcome_step = 0;
+            self.update_setting(|s| s.welcome_done = true);
+        }
+    }
+
+    /// The QR code for pairing a phone over WiFi, and how it is going.
+    fn wifi_pair_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pairing) = &self.wifi_pairing else {
+            return;
+        };
+        let p = self.palette();
+        let state = self.shared.status().wifi_pair.clone();
+        let mut close = false;
+        let mut new_code = false;
+        let response = egui::Modal::new(egui::Id::new("wifi_pair")).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.label(
+                RichText::new("Pair a phone over WiFi")
+                    .size(20.0)
+                    .strong()
+                    .color(p.text),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("On the phone: Settings › Developer options › Wireless debugging › Pair device with QR code. The phone and this PC must be on the same WiFi.")
+                    .color(p.muted),
+            );
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| draw_qr(ui, &pairing.qr, 220.0));
+            ui.add_space(8.0);
+            match &state {
+                Some(WifiPairState::Waiting) | None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Waiting for the phone to scan the code…").color(p.text));
+                    });
+                }
+                Some(WifiPairState::Pairing) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Phone found, pairing…").color(p.text));
+                    });
+                }
+                Some(WifiPairState::Connected(addr)) => {
+                    ui.label(
+                        RichText::new(format!("● Paired and connected ({addr}). Press Mirror next to the phone."))
+                            .color(p.good),
+                    );
+                }
+                Some(WifiPairState::Failed(e)) => {
+                    ui.label(RichText::new(e).color(p.bad));
+                }
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let done = matches!(state, Some(WifiPairState::Connected(_)));
+                if ui.button(if done { "Done" } else { "Cancel" }).clicked() {
+                    close = true;
+                }
+                if matches!(state, Some(WifiPairState::Failed(_))) && ui.button("New code").clicked() {
+                    new_code = true;
+                }
+            });
+        });
+        if new_code {
+            self.wifi_pairing = None;
+            self.wifi_pairing = wifi_pair::start(self.shared.clone());
+        } else if close || response.should_close() {
+            self.wifi_pairing = None;
+            self.shared.update_status(|s| s.wifi_pair = None);
+        }
+    }
+
     fn footer(&mut self, ui: &mut Ui) {
         let p = self.palette();
         ui.add_space(16.0);
@@ -1417,9 +1805,31 @@ impl eframe::App for App {
                         self.footer(ui);
                     });
             });
+        self.welcome_guide(&ctx);
+        self.wifi_pair_dialog(&ctx);
         self.pairing_dialog(&ctx);
         // Refresh stats even when no other event arrives.
         ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+/// A QR code on a white square with the quiet zone scanners need.
+fn draw_qr(ui: &mut Ui, qr: &wifi_pair::QrImage, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(6), Color32::WHITE);
+    let quiet = 4.0;
+    let cell = size / (qr.width as f32 + 2.0 * quiet);
+    for (i, dark) in qr.dark.iter().enumerate() {
+        if *dark {
+            let (x, y) = ((i % qr.width) as f32, (i / qr.width) as f32);
+            let min = rect.min + Vec2::new((x + quiet) * cell, (y + quiet) * cell);
+            painter.rect_filled(
+                egui::Rect::from_min_size(min, Vec2::splat(cell + 0.3)),
+                CornerRadius::ZERO,
+                Color32::BLACK,
+            );
+        }
     }
 }
 

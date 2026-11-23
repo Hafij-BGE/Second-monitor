@@ -1,0 +1,3 @@
+# Extendo: lets the logged-in user create the "Extendo Pen" virtual drawing
+# tablet (pen pressure from the Android tablet's stylus).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

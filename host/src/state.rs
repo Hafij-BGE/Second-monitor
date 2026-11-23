@@ -43,10 +43,35 @@ pub struct Settings {
     pub tablet_size: Option<(u32, u32)>,
     /// Closing the window keeps Extendo running (tray icon).
     pub run_in_background: bool,
+    /// The first-run welcome guide was shown.
+    pub welcome_done: bool,
+    /// Display settings remembered per tablet (by device id).
+    pub profiles: Vec<DeviceProfile>,
+    /// Device id of the tablet that connected last; settings changed while
+    /// none is connected are kept for it.
+    pub last_device: String,
+    /// Open the tablet app by itself when a known tablet is plugged in.
+    pub usb_autostart: bool,
+    /// adb serials of tablets that connected over USB before.
+    pub autostart_serials: Vec<String>,
+    /// Windows: Ctrl+Alt+E / Ctrl+Alt+X work anywhere.
+    pub hotkeys: bool,
     /// Settings as on disk before command-line options changed them for
     /// this run; those options are never saved.
     #[serde(skip)]
     pub on_disk: Option<Box<Settings>>,
+}
+
+/// Display settings for one tablet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceProfile {
+    pub id: String,
+    pub name: String,
+    pub mode: Mode,
+    pub monitor: Option<String>,
+    pub fps: u32,
+    pub bitrate_mbps: u32,
+    pub scale: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -121,6 +146,12 @@ impl Default for Settings {
             manage_virtual_display: true,
             tablet_size: None,
             run_in_background: true,
+            welcome_done: false,
+            profiles: Vec::new(),
+            last_device: String::new(),
+            usb_autostart: true,
+            autostart_serials: Vec::new(),
+            hotkeys: true,
             on_disk: None,
         }
     }
@@ -138,6 +169,39 @@ fn settings_path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// Loads this tablet's saved display settings. Returns false if it has none.
+    pub fn apply_profile(&mut self, id: &str) -> bool {
+        let Some(p) = self.profiles.iter().find(|p| p.id == id).cloned() else {
+            return false;
+        };
+        self.mode = p.mode;
+        self.monitor = p.monitor;
+        self.fps = p.fps;
+        self.bitrate_mbps = p.bitrate_mbps;
+        self.scale = p.scale;
+        true
+    }
+
+    /// Remembers the current display settings for this tablet.
+    pub fn remember_profile(&mut self, id: &str, name: &str) {
+        if id.is_empty() {
+            return;
+        }
+        let profile = DeviceProfile {
+            id: id.to_string(),
+            name: name.to_string(),
+            mode: self.mode,
+            monitor: self.monitor.clone(),
+            fps: self.fps,
+            bitrate_mbps: self.bitrate_mbps,
+            scale: self.scale,
+        };
+        match self.profiles.iter_mut().find(|p| p.id == id) {
+            Some(p) => *p = profile,
+            None => self.profiles.push(profile),
+        }
+    }
+
     pub fn load() -> Self {
         settings_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -175,6 +239,8 @@ impl Settings {
 
 #[derive(Debug, Clone, Default)]
 pub struct Viewer {
+    /// Random id the app made once.
+    pub device_id: String,
     pub name: String,
     pub address: String,
     pub usb: bool,
@@ -183,6 +249,31 @@ pub struct Viewer {
     pub fps: f32,
     pub mbps: f32,
     pub encode_ms: f32,
+    /// Battery and temperature, once the app reported them.
+    pub device_status: Option<crate::protocol::DeviceStatus>,
+    pub pen: PenSupport,
+}
+
+/// Pen pressure for the connected tablet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub enum PenSupport {
+    /// Not available on this system (Windows, or not GNOME).
+    #[default]
+    Unsupported,
+    Ready,
+    /// /dev/uinput isn't writable: the udev rule is missing.
+    NeedsSetup,
+}
+
+/// Pairing a phone over WiFi with Android 11+ Wireless debugging (QR code).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WifiPairState {
+    /// QR code shown, waiting for the phone to scan it.
+    Waiting,
+    Pairing,
+    Connected(String),
+    Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,6 +334,7 @@ pub struct Status {
     pub pairing_code: String,
     pub viewer: Option<Viewer>,
     pub transfers: Vec<Transfer>,
+    pub wifi_pair: Option<WifiPairState>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +397,33 @@ impl Shared {
         }
     }
 
+    /// Changes settings, keeps them as the current tablet's own, and saves.
+    pub fn update_settings(&self, f: impl FnOnce(&mut Settings)) {
+        let viewer = self
+            .status()
+            .viewer
+            .as_ref()
+            .map(|v| (v.device_id.clone(), v.name.clone()));
+        let mut s = self.settings.lock().unwrap();
+        f(&mut s);
+        let (id, name) = viewer.unwrap_or_else(|| {
+            let id = s.last_device.clone();
+            let name = s
+                .profiles
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            (id, name)
+        });
+        if s.profiles.iter().any(|p| p.id == id) {
+            s.remember_profile(&id, &name);
+        }
+        s.save();
+        drop(s);
+        self.changed();
+    }
+
     pub fn update_status(&self, f: impl FnOnce(&mut Status)) {
         f(&mut self.status());
         self.changed();
@@ -346,5 +465,34 @@ impl Shared {
         log.push_back(line);
         drop(log);
         self.changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_tablet_keeps_its_display_settings() {
+        let mut s = Settings::default();
+        assert!(!s.apply_profile("a"));
+        s.fps = 90;
+        s.remember_profile("a", "Tab A");
+        s.fps = 30;
+        s.mode = Mode::Mirror;
+        s.remember_profile("b", "Tab B");
+        assert!(s.apply_profile("a"));
+        assert_eq!((s.fps, s.mode), (90, Mode::Extend));
+        assert!(s.apply_profile("b"));
+        assert_eq!((s.fps, s.mode), (30, Mode::Mirror));
+        s.remember_profile("", "nobody");
+        assert_eq!(s.profiles.len(), 2);
+    }
+
+    #[test]
+    fn old_settings_files_still_load() {
+        let s: Settings = serde_json::from_str(r#"{"port": 50000}"#).unwrap();
+        assert_eq!(s.port, 50000);
+        assert!(s.usb_autostart && !s.welcome_done && s.profiles.is_empty());
     }
 }

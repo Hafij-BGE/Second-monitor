@@ -7,7 +7,10 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.sin
 
 /**
  * Turns touches on the video into host input.
@@ -15,7 +18,8 @@ import kotlin.math.hypot
  * Touchscreen mode: fingers are real touches. Trackpad mode: one finger moves
  * the pointer, tap = click, two-finger tap = right click, three-finger tap =
  * middle click, two fingers scroll, press and hold then drag = drag.
- * A stylus or mouse always acts as an absolute pointer.
+ * A stylus or mouse always acts as an absolute pointer. When the PC supports
+ * it, the stylus also sends pressure and tilt (a drawing tablet on the PC).
  */
 class InputController(private val view: View, private val client: () -> StreamClient?) {
     var mode = InputMode.TOUCH
@@ -49,13 +53,22 @@ class InputController(private val view: View, private val client: () -> StreamCl
 
     // Stylus/mouse button state.
     private var penDown = false
+    /** This stylus reports hovering, so the PC hears when it leaves. */
+    private var penHovers = false
+    /** Hover exit comes right before touch-down too, so wait a moment. */
+    private val penLeave = Runnable {
+        if (!penDown) client()?.sendPen(Protocol.PEN_LEAVE, false, false, 0f, 0f, 0f, 0f, 0f)
+    }
 
     fun onTouch(e: MotionEvent): Boolean {
         val c = client() ?: return true
         val tool = e.getToolType(e.actionIndex)
-        if (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_MOUSE ||
-            tool == MotionEvent.TOOL_TYPE_ERASER
-        ) {
+        val stylus = tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
+        if (stylus && c.penSupported) {
+            pen(e, c)
+            return true
+        }
+        if (stylus || tool == MotionEvent.TOOL_TYPE_MOUSE) {
             pointer(e, c)
             return true
         }
@@ -69,6 +82,22 @@ class InputController(private val view: View, private val client: () -> StreamCl
     /** Stylus hover and mouse movement without buttons. */
     fun onGenericMotion(e: MotionEvent): Boolean {
         val c = client() ?: return false
+        val tool = e.getToolType(0)
+        if (c.penSupported && (tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER)) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                    handler.removeCallbacks(penLeave)
+                    penHovers = true
+                    sendPen(c, e, 0, -1, Protocol.PEN_HOVER)
+                    return true
+                }
+                MotionEvent.ACTION_HOVER_EXIT -> {
+                    handler.removeCallbacks(penLeave)
+                    handler.postDelayed(penLeave, 150)
+                    return true
+                }
+            }
+        }
         return when (e.actionMasked) {
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
                 c.sendMouseMoveTo(nx(e.x), ny(e.y))
@@ -111,6 +140,49 @@ class InputController(private val view: View, private val client: () -> StreamCl
                 c.sendMouseButton(Protocol.BUTTON_RIGHT, false)
             }
         }
+    }
+
+    /** Stylus with pressure and tilt, including the samples Android batched. */
+    private fun pen(e: MotionEvent, c: StreamClient) {
+        val i = e.actionIndex
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                handler.removeCallbacks(penLeave)
+                penDown = true
+                sendPen(c, e, i, -1, Protocol.PEN_DOWN)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                for (h in 0 until e.historySize) sendPen(c, e, i, h, Protocol.PEN_MOVE)
+                sendPen(c, e, i, -1, Protocol.PEN_MOVE)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                penDown = false
+                sendPen(c, e, i, -1, Protocol.PEN_UP)
+                // Without hover events nothing else says the pen went away.
+                if (!penHovers) sendPen(c, e, i, -1, Protocol.PEN_LEAVE)
+            }
+        }
+    }
+
+    /** One stylus sample; [h] is a history index or -1 for the current one. */
+    private fun sendPen(c: StreamClient, e: MotionEvent, i: Int, h: Int, action: Int) {
+        fun axis(a: Int) = if (h < 0) e.getAxisValue(a, i) else e.getHistoricalAxisValue(a, i, h)
+        val x = if (h < 0) e.getX(i) else e.getHistoricalX(i, h)
+        val y = if (h < 0) e.getY(i) else e.getHistoricalY(i, h)
+        val pressure = when (action) {
+            Protocol.PEN_DOWN, Protocol.PEN_MOVE -> (if (h < 0) e.getPressure(i) else e.getHistoricalPressure(i, h)).coerceIn(0f, 1f)
+            else -> 0f
+        }
+        // Android: tilt from vertical and the direction it leans; the PC wants
+        // the lean along x and y in degrees.
+        val tilt = axis(MotionEvent.AXIS_TILT)
+        val orientation = axis(MotionEvent.AXIS_ORIENTATION)
+        val deg = (180.0 / Math.PI).toFloat()
+        val tiltX = atan2(sin(tilt) * sin(orientation), cos(tilt)) * deg
+        val tiltY = atan2(-sin(tilt) * cos(orientation), cos(tilt)) * deg
+        val eraser = e.getToolType(i) == MotionEvent.TOOL_TYPE_ERASER
+        val barrel = e.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY != 0
+        c.sendPen(action, eraser, barrel, nx(x), ny(y), pressure, tiltX, tiltY)
     }
 
     /** Host pixels per view pixel, with a little acceleration for fast swipes. */

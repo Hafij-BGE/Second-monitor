@@ -23,12 +23,22 @@ pub const CODEC_H264: u8 = 1;
 pub const MSG_VIDEO: u8 = 1;
 pub const MSG_RESIZE: u8 = 2;
 pub const MSG_CURSOR: u8 = 3;
+/// What this PC can do (u32 FEATURE_* bits); sent once after the hello.
+/// Older viewers skip it.
+pub const MSG_FEATURES: u8 = 4;
 
 // Client -> host
 pub const MSG_TOUCH: u8 = 10;
 pub const MSG_KEYFRAME: u8 = 11;
 pub const MSG_MOUSE: u8 = 12;
 pub const MSG_KEY: u8 = 13;
+/// Stylus with pressure and tilt; only sent when the PC has FEATURE_PEN.
+pub const MSG_PEN: u8 = 14;
+/// Battery and temperature of the tablet, sent now and then.
+pub const MSG_DEVICE_STATUS: u8 = 15;
+
+/// The PC turns MSG_PEN into a pressure-sensitive drawing tablet.
+pub const FEATURE_PEN: u32 = 1;
 
 // Both directions
 pub const MSG_CLIPBOARD: u8 = 20;
@@ -156,6 +166,10 @@ pub fn write_cursor(w: &mut impl Write, c: &crate::backend::CursorUpdate) -> io:
     write_message(w, MSG_CURSOR, &[&payload])
 }
 
+pub fn write_features(w: &mut impl Write, features: u32) -> io::Result<()> {
+    write_message(w, MSG_FEATURES, &[&features.to_be_bytes()])
+}
+
 pub fn write_clipboard(w: &mut impl Write, text: &str) -> io::Result<()> {
     write_message(w, MSG_CLIPBOARD, &[text.as_bytes()])
 }
@@ -233,8 +247,48 @@ pub enum MouseEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PenAction {
+    /// In range above the screen, not touching.
+    Hover,
+    Down,
+    Move,
+    Up,
+    /// Left the screen's range.
+    Leave,
+}
+
+/// A stylus sample. `x`/`y` are 0.0..=1.0 of the video.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct Pen {
+    pub action: PenAction,
+    pub eraser: bool,
+    /// Barrel button held.
+    pub barrel: bool,
+    pub x: f32,
+    pub y: f32,
+    /// 0.0..=1.0.
+    pub pressure: f32,
+    /// Degrees, -90..=90.
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+}
+
+/// Tablet health reported by the app.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeviceStatus {
+    /// Percent, if known.
+    pub battery: Option<u8>,
+    pub charging: bool,
+    /// Battery temperature in °C, if known.
+    pub temperature: Option<f32>,
+}
+
 pub enum ClientMessage {
     Touch(Touch),
+    Pen(Pen),
+    DeviceStatus(DeviceStatus),
     KeyframeRequest,
     Mouse(MouseEvent),
     /// X11 keysym; text uses Unicode keysyms (0x0100_0000 + code point).
@@ -311,6 +365,30 @@ pub fn read_client_message(r: &mut impl Read) -> io::Result<ClientMessage> {
             keysym: u32_at(0),
             pressed: p[4] != 0,
         },
+        MSG_PEN if p.len() >= 23 => ClientMessage::Pen(Pen {
+            action: match p[0] {
+                0 => PenAction::Hover,
+                1 => PenAction::Down,
+                2 => PenAction::Move,
+                3 => PenAction::Up,
+                _ => PenAction::Leave,
+            },
+            eraser: p[1] == 1,
+            barrel: p[2] & 1 != 0,
+            x: f32_at(3).clamp(0.0, 1.0),
+            y: f32_at(7).clamp(0.0, 1.0),
+            pressure: f32_at(11).clamp(0.0, 1.0),
+            tilt_x: f32_at(15).clamp(-90.0, 90.0),
+            tilt_y: f32_at(19).clamp(-90.0, 90.0),
+        }),
+        MSG_DEVICE_STATUS if p.len() >= 4 => {
+            let temp = i16::from_be_bytes([p[2], p[3]]);
+            ClientMessage::DeviceStatus(DeviceStatus {
+                battery: (p[0] <= 100).then_some(p[0]),
+                charging: p[1] != 0,
+                temperature: (temp != i16::MIN).then(|| temp as f32 / 10.0),
+            })
+        }
         MSG_CLIPBOARD => ClientMessage::Clipboard(String::from_utf8_lossy(&p).into_owned()),
         MSG_FILE_BEGIN if p.len() >= 14 => {
             let name_len = u16::from_be_bytes([p[12], p[13]]) as usize;
@@ -341,4 +419,59 @@ fn read_u8(r: &mut impl Read) -> io::Result<u8> {
 
 fn invalid(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(kind: u8, payload: &[u8]) -> Vec<u8> {
+        let mut m = vec![kind];
+        m.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        m.extend_from_slice(payload);
+        m
+    }
+
+    #[test]
+    fn reads_pen() {
+        let mut p = vec![1, 1, 1];
+        for v in [0.25f32, 0.5, 0.75, 30.0, -100.0] {
+            p.extend_from_slice(&v.to_be_bytes());
+        }
+        let msg = message(MSG_PEN, &p);
+        let ClientMessage::Pen(pen) = read_client_message(&mut msg.as_slice()).unwrap() else {
+            panic!("not a pen message");
+        };
+        assert_eq!(pen.action, PenAction::Down);
+        assert!(pen.eraser && pen.barrel);
+        assert_eq!((pen.x, pen.y, pen.pressure), (0.25, 0.5, 0.75));
+        assert_eq!((pen.tilt_x, pen.tilt_y), (30.0, -90.0));
+    }
+
+    #[test]
+    fn reads_device_status() {
+        let msg = message(MSG_DEVICE_STATUS, &[82, 1, 0x01, 0x3b]);
+        let ClientMessage::DeviceStatus(d) = read_client_message(&mut msg.as_slice()).unwrap()
+        else {
+            panic!("not a status message");
+        };
+        assert_eq!(d.battery, Some(82));
+        assert!(d.charging);
+        assert_eq!(d.temperature, Some(31.5));
+
+        let unknown = [255, 0, 0x80, 0x00];
+        let msg = message(MSG_DEVICE_STATUS, &unknown);
+        let ClientMessage::DeviceStatus(d) = read_client_message(&mut msg.as_slice()).unwrap()
+        else {
+            panic!("not a status message");
+        };
+        assert_eq!((d.battery, d.temperature), (None, None));
+    }
+
+    #[test]
+    fn writes_features() {
+        let mut out = Vec::new();
+        write_features(&mut out, FEATURE_PEN).unwrap();
+        assert_eq!(out, [MSG_FEATURES, 0, 0, 0, 4, 0, 0, 0, 1]);
+    }
 }

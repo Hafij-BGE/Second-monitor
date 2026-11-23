@@ -38,6 +38,16 @@
             </intent-filter>
         </activity>
 
+        <!-- Started by the PC over adb on plug-in; DUMP is held by adb's
+             shell but can't be granted to other apps. -->
+        <activity
+            android:name=".UsbConnectActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <activity
             android:name=".StreamActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|smallestScreenSize|navigation"

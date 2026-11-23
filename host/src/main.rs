@@ -10,14 +10,18 @@ mod discovery;
 mod encoder;
 mod files;
 mod gui;
+mod hotkeys;
 mod logging;
 mod mirror;
+#[cfg(target_os = "linux")]
+mod pen;
 mod protocol;
 mod scale;
 mod server;
 mod state;
 mod storage;
 mod tls;
+mod wifi_pair;
 
 use anyhow::{bail, Context, Result};
 
@@ -45,6 +49,8 @@ Options:
       --scale <SCALE>      Divide the device resolution by this (1.5 makes text bigger)
       --no-usb             Don't set up USB (adb reverse)
       --no-discovery       Don't accept WiFi connections
+      --toggle-mode        Tell the running Extendo to switch Extend / Mirror
+      --disconnect         Tell the running Extendo to disconnect the tablet
   -h, --help               Print help
   -V, --version            Print version
 ";
@@ -62,6 +68,8 @@ struct Args {
     scale: Option<f32>,
     no_usb: bool,
     no_discovery: bool,
+    /// Command for the copy that is already running.
+    tell: Option<&'static str>,
 }
 
 impl Args {
@@ -80,7 +88,9 @@ impl Args {
                     .with_context(|| format!("{name} needs a value"))
             };
             fn num<T: std::str::FromStr>(name: &str, v: String) -> Result<T> {
-                v.parse().ok().with_context(|| format!("invalid value '{v}' for {name}"))
+                v.parse()
+                    .ok()
+                    .with_context(|| format!("invalid value '{v}' for {name}"))
             }
             match name.as_str() {
                 "--headless" => args.headless = true,
@@ -88,6 +98,8 @@ impl Args {
                 "--list" => args.list = true,
                 "--no-usb" => args.no_usb = true,
                 "--no-discovery" => args.no_discovery = true,
+                "--toggle-mode" => args.tell = Some("toggle-mode"),
+                "--disconnect" => args.tell = Some("disconnect"),
                 "--port" => args.port = Some(num(&name, value()?)?),
                 "--fps" => args.fps = Some(num(&name, value()?)?),
                 "--bitrate" => args.bitrate = Some(num(&name, value()?)?),
@@ -122,6 +134,13 @@ fn main() -> Result<()> {
     let args = Args::parse()?;
     platform_init(args.headless || args.list);
     logging::init();
+
+    if let Some(command) = args.tell {
+        if !background::tell_running(command) {
+            anyhow::bail!("Extendo isn't running");
+        }
+        return Ok(());
+    }
 
     if args.list {
         for m in backend::list_monitors()? {
@@ -178,6 +197,7 @@ fn main() -> Result<()> {
 
     let shared = Shared::new(settings);
     logging::attach(shared.clone());
+    hotkeys::init(shared.clone());
     server::start(shared.clone());
     mirror::detect(shared.clone());
     mirror::reconnect_saved(shared.clone());

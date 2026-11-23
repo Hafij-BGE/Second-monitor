@@ -69,6 +69,9 @@ class StreamClient(
     }
 
     @Volatile private var closed = false
+    /** The PC turns MSG_PEN into a pressure-sensitive drawing tablet. */
+    @Volatile var penSupported = false
+        private set
     private var socket: Socket? = null
     @Volatile private var output: DataOutputStream? = null
     private val sender = Executors.newSingleThreadExecutor()
@@ -138,6 +141,28 @@ class StreamClient(
         out.writeFloat(dx)
         out.writeFloat(dy)
         out.writeByte(if (finish) 1 else 0)
+    }
+
+    fun sendPen(action: Int, eraser: Boolean, barrel: Boolean, x: Float, y: Float, pressure: Float, tiltX: Float, tiltY: Float) = send { out ->
+        out.writeByte(Protocol.MSG_PEN)
+        out.writeInt(23)
+        out.writeByte(action)
+        out.writeByte(if (eraser) 1 else 0)
+        out.writeByte(if (barrel) 1 else 0)
+        out.writeFloat(x)
+        out.writeFloat(y)
+        out.writeFloat(pressure)
+        out.writeFloat(tiltX)
+        out.writeFloat(tiltY)
+    }
+
+    /** [battery] in percent or -1; [tenthsC] battery temperature or null. */
+    fun sendDeviceStatus(battery: Int, charging: Boolean, tenthsC: Int?) = send { out ->
+        out.writeByte(Protocol.MSG_DEVICE_STATUS)
+        out.writeInt(4)
+        out.writeByte(if (battery in 0..100) battery else 255)
+        out.writeByte(if (charging) 1 else 0)
+        out.writeShort(tenthsC?.coerceIn(-32767, 32767) ?: Short.MIN_VALUE.toInt())
     }
 
     fun sendKey(keysym: Int, pressed: Boolean) = send { out ->
@@ -359,6 +384,11 @@ class StreamClient(
                     setVideoSize(w, h)
                 }
                 Protocol.MSG_CURSOR -> readCursor(input, length)
+                Protocol.MSG_FEATURES -> {
+                    val features = if (length >= 4) input.readInt() else 0
+                    input.skipBytes((length - 4).coerceAtLeast(0))
+                    penSupported = features and Protocol.FEATURE_PEN != 0
+                }
                 Protocol.MSG_CLIPBOARD -> {
                     val bytes = ByteArray(length)
                     input.readFully(bytes)

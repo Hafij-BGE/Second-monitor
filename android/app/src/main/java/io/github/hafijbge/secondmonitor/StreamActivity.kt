@@ -5,9 +5,11 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.net.Uri
 import android.net.wifi.WifiManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -66,6 +68,7 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        running = true
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         settings = AppSettings(this)
         files = FileStore(this)
@@ -223,8 +226,28 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
     }
 
     override fun onDestroy() {
+        running = false
         disconnect()
         super.onDestroy()
+    }
+
+    /** Battery and temperature for the PC's window, every 30 s. */
+    private val reportDevice = object : Runnable {
+        override fun run() {
+            val c = client ?: return
+            val battery = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (battery != null) {
+                val level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
+                val scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
+                val percent = if (level >= 0 && scale > 0) level * 100 / scale else -1
+                val plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+                val status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+                val charging = plugged && status != BatteryManager.BATTERY_STATUS_DISCHARGING
+                val temp = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+                c.sendDeviceStatus(percent, charging, temp.takeIf { it != Int.MIN_VALUE })
+            }
+            ui.postDelayed(this, 30_000)
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -259,6 +282,8 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
 
     override fun onConnected() {
         runOnUiThread {
+            ui.removeCallbacks(reportDevice)
+            ui.post(reportDevice)
             state.error.value = null
             if (state.phase.value == Phase.APPROVAL) state.phase.value = Phase.CONNECTING
         }
@@ -447,6 +472,10 @@ class StreamActivity : ComponentActivity(), SurfaceHolder.Callback, StreamClient
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_NAME = "name"
+
+        /** A stream screen is open (so plugging in again doesn't restart it). */
+        @Volatile
+        var running = false
     }
 }
 

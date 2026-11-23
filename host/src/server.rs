@@ -17,7 +17,7 @@ use crate::files;
 use crate::protocol::{self, ClientMessage};
 use crate::scale;
 use crate::state::{
-    PairingDecision, PairingRequest, SessionCommand, Shared, TrustedDevice, Viewer,
+    PairingDecision, PairingRequest, PenSupport, SessionCommand, Shared, TrustedDevice, Viewer,
 };
 use crate::tls::{self, TlsWriter};
 use crate::{adb, discovery};
@@ -175,6 +175,7 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
     // its own timeout, so clear it on the reader's clone too.
     stream.set_read_timeout(None)?;
     reader.get_ref().set_read_timeout(None)?;
+    remember_tablet(shared, &hello.device_id, &name, usb);
     let settings = shared.settings();
     log::info!(
         "{name}: screen {}x{} @ {} dpi, protocol v{}",
@@ -214,9 +215,17 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
     let mut capture = backend::start(&req)?;
     let frames = capture.frames.clone();
     let input = capture.input.clone();
+    let (mut pen, pen_support) = open_pen(&settings);
+    let features = if pen.is_some() {
+        protocol::FEATURE_PEN
+    } else {
+        0
+    };
 
     shared.update_status(|s| {
         s.viewer = Some(Viewer {
+            device_id: hello.device_id.clone(),
+            pen: pen_support,
             name: name.clone(),
             address: stream
                 .peer_addr()
@@ -251,12 +260,22 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
         let closed = closed.clone();
         let input = input.clone();
         let mut incoming = files::Incoming::new(shared.clone(), settings.save_dir.clone());
+        let shared = shared.clone();
         thread::Builder::new()
             .name("client-reader".into())
             .spawn(move || {
                 loop {
                     match protocol::read_client_message(&mut reader) {
                         Ok(ClientMessage::Touch(t)) => input.lock().unwrap().touch(t),
+                        Ok(ClientMessage::Pen(p)) => match &mut pen {
+                            Some(dev) => dev.send(p),
+                            None => pen_as_mouse(&mut **input.lock().unwrap(), p),
+                        },
+                        Ok(ClientMessage::DeviceStatus(d)) => shared.update_status(|s| {
+                            if let Some(v) = &mut s.viewer {
+                                v.device_status = Some(d);
+                            }
+                        }),
                         Ok(ClientMessage::Mouse(m)) => input.lock().unwrap().mouse(m),
                         Ok(ClientMessage::Key { keysym, pressed }) => {
                             input.lock().unwrap().key(keysym, pressed)
@@ -320,12 +339,104 @@ fn serve(stream: TcpStream, shared: &Arc<Shared>, identity: &tls::Identity) -> R
     }
 
     let result = stream_video(
-        &frames, &out, &hello, fps, bitrate, &keyframe, &closed, shared,
+        &frames, &out, &hello, features, fps, bitrate, &keyframe, &closed, shared,
     );
     let _ = stream.shutdown(Shutdown::Both);
     closed.store(true, Ordering::Relaxed);
     drop(capture);
     result
+}
+
+/// Loads the tablet's own display settings (or saves the current ones as
+/// its own), and remembers a USB tablet for opening the app on plug-in.
+fn remember_tablet(shared: &Shared, id: &str, name: &str, usb: bool) {
+    let usb_serial = if usb {
+        let status = shared.status();
+        let mut cabled = status.usb_devices.iter().filter(|d| !d.wifi);
+        match (cabled.next(), cabled.next()) {
+            // With several cables plugged in, we can't tell which one it is.
+            (Some(d), None) => Some(d.serial.clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut s = shared.settings.lock().unwrap();
+    // Command-line options win over saved per-tablet settings.
+    if s.on_disk.is_none() {
+        if s.apply_profile(id) {
+            log::info!("{name}: using the display settings saved for it");
+        } else {
+            s.remember_profile(id, name);
+        }
+    }
+    s.last_device = id.to_string();
+    if let Some(serial) = usb_serial {
+        if !s.autostart_serials.contains(&serial) {
+            s.autostart_serials.push(serial);
+        }
+    }
+    s.save();
+}
+
+/// The virtual drawing tablet for pen pressure, where the system has one.
+#[cfg(target_os = "linux")]
+fn open_pen(settings: &crate::state::Settings) -> (Option<crate::pen::PenDevice>, PenSupport) {
+    match crate::pen::PenDevice::open(settings.mode, settings.monitor.clone()) {
+        Ok(dev) => (Some(dev), PenSupport::Ready),
+        Err(e) => {
+            log::info!("pen pressure off: {e:#}");
+            let denied = e
+                .downcast_ref::<io::Error>()
+                .is_some_and(|e| e.kind() == io::ErrorKind::PermissionDenied);
+            let support = if denied {
+                PenSupport::NeedsSetup
+            } else {
+                PenSupport::Unsupported
+            };
+            (None, support)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct NoPen;
+
+#[cfg(not(target_os = "linux"))]
+impl NoPen {
+    fn send(&mut self, _: protocol::Pen) {}
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_pen(_: &crate::state::Settings) -> (Option<NoPen>, PenSupport) {
+    (None, PenSupport::Unsupported)
+}
+
+/// Without a pen device the stylus works as a mouse, as before.
+fn pen_as_mouse(input: &mut dyn backend::InputSink, p: protocol::Pen) {
+    use protocol::{MouseButton, MouseEvent, PenAction};
+    if p.action != PenAction::Leave {
+        input.mouse(MouseEvent::MoveTo { x: p.x, y: p.y });
+    }
+    match p.action {
+        PenAction::Down => input.mouse(MouseEvent::Button {
+            button: if p.barrel {
+                MouseButton::Right
+            } else {
+                MouseButton::Left
+            },
+            pressed: true,
+        }),
+        PenAction::Up => {
+            for button in [MouseButton::Left, MouseButton::Right] {
+                input.mouse(MouseEvent::Button {
+                    button,
+                    pressed: false,
+                });
+            }
+        }
+        PenAction::Hover | PenAction::Move | PenAction::Leave => {}
+    }
 }
 
 /// USB is always allowed. Over WiFi the tablet must be trusted, or the
@@ -400,6 +511,7 @@ fn stream_video(
     frames: &backend::FrameSlot,
     out: &Out,
     hello: &protocol::ClientHello,
+    features: u32,
     fps: u32,
     bitrate: u32,
     keyframe: &AtomicBool,
@@ -462,6 +574,9 @@ fn stream_video(
                     protocol::write_resize(&mut *writer, w as u16, h as u16)?;
                 } else {
                     protocol::write_server_hello(&mut *writer, hello.version, w as u16, h as u16)?;
+                    if features != 0 {
+                        protocol::write_features(&mut *writer, features)?;
+                    }
                     out.ready.store(true, Ordering::Release);
                 }
             }

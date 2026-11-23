@@ -23,6 +23,8 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
         .name("adb".into())
         .spawn(move || {
             let mut reversed: HashSet<String> = HashSet::new();
+            // Tablets already seen on this plug-in, so the app opens once.
+            let mut seen: HashSet<String> = HashSet::new();
             // Per-serial `adb tcpip` state; re-read on the slow checks only.
             let mut tcp: HashMap<String, bool> = HashMap::new();
             let mut tick: u32 = 0;
@@ -49,7 +51,13 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
                         shared.changed();
                     }
                 }
+                let cabled: Vec<String> = devices
+                    .iter()
+                    .filter(|d| !d.wifi)
+                    .map(|d| d.serial.clone())
+                    .collect();
                 let serials: Vec<String> = devices.into_iter().map(|d| d.serial).collect();
+                seen.retain(|s| cabled.contains(s));
                 reversed.retain(|s| serials.contains(s));
                 tcp.retain(|s, _| serials.contains(s));
                 // If the adb server restarted (another tool can do that), the
@@ -76,10 +84,57 @@ pub fn spawn(shared: Arc<Shared>, port: u16) {
                         reversed.insert(serial);
                     }
                 }
+                for serial in cabled {
+                    if reversed.contains(&serial) && seen.insert(serial.clone()) {
+                        autostart(&shared, &adb, &serial, port);
+                    }
+                }
                 thread::sleep(Duration::from_secs(2));
             }
         })
         .expect("spawn adb thread");
+}
+
+/// Package and launcher of the Extendo tablet app.
+const APP_PACKAGE: &str = "io.github.hafijbge.extendo";
+/// Only adb's shell may start this one (it needs a permission apps can't get).
+const USB_ACTIVITY: &str = "io.github.hafijbge.secondmonitor.UsbConnectActivity";
+
+/// Opens the tablet app on a tablet that connected over USB before, so
+/// plugging it in is enough.
+fn autostart(shared: &Shared, adb: &PathBuf, serial: &str, port: u16) {
+    let s = shared.settings();
+    if !s.usb_autostart
+        || !s.autostart_serials.iter().any(|x| x == serial)
+        || shared.status().viewer.is_some()
+    {
+        return;
+    }
+    let component = format!("{APP_PACKAGE}/{USB_ACTIVITY}");
+    match run(
+        adb,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "am",
+            "start",
+            "-n",
+            &component,
+            "--ei",
+            "port",
+            &port.to_string(),
+        ],
+    ) {
+        // `am start` prints errors on stdout and still exits 0.
+        Ok(out) if out.contains("Error") => {
+            log::info!(
+                "tablet {serial}: can't open Extendo by itself ({out}); update the tablet app"
+            )
+        }
+        Ok(_) => log::info!("tablet {serial} plugged in: opening Extendo on it"),
+        Err(e) => log::info!("tablet {serial}: can't open Extendo by itself: {e}"),
+    }
 }
 
 /// Devices adb can talk to, over USB or WiFi (`adb connect`). `tcp` caches

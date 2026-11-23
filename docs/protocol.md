@@ -32,6 +32,12 @@ SMON_HOST <tcp_port> <host_name>
 The host runs `adb reverse tcp:52020 tcp:52020`; the app connects to
 `127.0.0.1:52020`. Everything else is identical to WiFi.
 
+When a tablet that connected over USB before is plugged in again, the host
+opens the app with `adb shell am start -n
+io.github.hafijbge.extendo/io.github.hafijbge.secondmonitor.UsbConnectActivity
+--ei port PORT`. That activity requires `android.permission.DUMP`, which only
+adb's shell holds, so other apps can't start a connection.
+
 ## Handshake
 
 Client → host:
@@ -76,6 +82,7 @@ Host → client:
 | 1 | video | `u64 pts_us`, then one H.264 access unit in Annex B format. Keyframes carry SPS and PPS. |
 | 2 | resize | `u16 width`, `u16 height`. The next video message is a keyframe. |
 | 3 | cursor | `u8 flags` (bit 0 visible, bit 1 image follows), `f32 x`, `f32 y` (hotspot, 0.0–1.0 of the video), `u16 source_width`. If bit 1: `u16 width`, `u16 height`, `u16 hot_x`, `u16 hot_y`, then `width*height*4` bytes of premultiplied RGBA. |
+| 4 | features | `u32` bits: 1 = pen (the PC turns message 14 into a pressure-sensitive drawing tablet). Sent once, right after the server hello; older viewers skip it. |
 
 Client → host:
 
@@ -85,6 +92,8 @@ Client → host:
 | 11 | keyframe request | empty |
 | 12 | mouse | `u8 op`, then: 0 move to `f32 x, f32 y` (0.0–1.0) · 1 move by `f32 dx, f32 dy` (host pixels) · 2 button `u8 button` (0 left, 1 right, 2 middle), `u8 pressed` · 3 scroll `f32 dx, f32 dy` (host pixels), `u8 finish` |
 | 13 | key | `u32 keysym` (X11; text uses `0x01000000 + code point`), `u8 pressed` |
+| 14 | pen | Only after features bit 1. `u8 action` (0 hover, 1 down, 2 move, 3 up, 4 leave), `u8 tool` (0 pen, 1 eraser), `u8 buttons` (bit 0 barrel button), `f32 x`, `f32 y` (0.0–1.0 of the video), `f32 pressure` (0.0–1.0), `f32 tilt_x`, `f32 tilt_y` (degrees, -90–90) |
+| 15 | device status | `u8 battery` (percent, 255 unknown), `u8 charging`, `i16 temperature` (tenths of °C, -32768 unknown). About every 30 s. |
 
 Both directions:
 

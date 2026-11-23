@@ -20,12 +20,25 @@ object Protocol {
     const val MSG_VIDEO = 1
     const val MSG_RESIZE = 2
     const val MSG_CURSOR = 3
+    /** u32 FEATURE_* bits the PC supports; sent once after the hello. */
+    const val MSG_FEATURES = 4
 
     // Client -> host
     const val MSG_TOUCH = 10
     const val MSG_KEYFRAME = 11
     const val MSG_MOUSE = 12
     const val MSG_KEY = 13
+    /** Stylus with pressure and tilt; only when the PC has FEATURE_PEN. */
+    const val MSG_PEN = 14
+    const val MSG_DEVICE_STATUS = 15
+
+    const val FEATURE_PEN = 1
+
+    const val PEN_HOVER = 0
+    const val PEN_DOWN = 1
+    const val PEN_MOVE = 2
+    const val PEN_UP = 3
+    const val PEN_LEAVE = 4
 
     // Both directions
     const val MSG_CLIPBOARD = 20

@@ -38,6 +38,7 @@ cp -a $STAGE/. %{buildroot}/
 %files
 /usr/bin/extendo
 /usr/lib/extendo
+/usr/lib/udev/rules.d/70-extendo-uinput.rules
 /usr/share/applications/extendo.desktop
 /usr/share/icons/hicolor/*/apps/extendo.*
 %doc /usr/share/doc/extendo
