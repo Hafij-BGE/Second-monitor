@@ -71,6 +71,65 @@ pub const DARK: Palette = Palette {
     shadow: Color32::from_rgba_premultiplied(0, 0, 0, 150),
 };
 
+// ------------------------------------------------- modern look palette
+
+pub const BLUE: Color32 = Color32::from_rgb(0x3b, 0x82, 0xf6);
+pub const ROSE: Color32 = Color32::from_rgb(0xf4, 0x3f, 0x5e);
+pub const FUCHSIA: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);
+pub const DEEP_TEAL: Color32 = Color32::from_rgb(0x0d, 0x94, 0x88);
+
+pub const M_SCREEN_GRAD: (Color32, Color32) = (BLUE, INDIGO);
+pub const M_MIRROR_GRAD: (Color32, Color32) = (ROSE, FUCHSIA);
+pub const M_STORAGE_GRAD: (Color32, Color32) = (AMBER, ORANGE);
+pub const M_KEYS_GRAD: (Color32, Color32) = (GREEN, DEEP_TEAL);
+
+const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied_const(r, g, b, a)
+}
+
+/// Modern look, light: ceramic canvas and frosted white glass.
+pub const MODERN_LIGHT: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(0xf4, 0xf6, 0xfa),
+    glass: rgba(255, 255, 255, 214),
+    glass_border: rgba(15, 23, 42, 22),
+    inset: rgba(241, 245, 249, 222),
+    inset_border: rgba(15, 23, 42, 24),
+    field: Color32::from_rgb(0xee, 0xf2, 0xf7),
+    text: Color32::from_rgb(0x0f, 0x17, 0x2a),
+    muted: Color32::from_rgb(0x47, 0x55, 0x69),
+    faint: Color32::from_rgb(0x94, 0xa3, 0xb8),
+    dots: rgba(15, 23, 42, 20),
+    shadow: rgba(15, 23, 42, 22),
+};
+
+/// Modern look, dark: obsidian canvas and smoked glass.
+pub const MODERN_DARK: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(0x09, 0x0a, 0x0f),
+    glass: rgba(19, 22, 34, 200),
+    glass_border: rgba(255, 255, 255, 24),
+    inset: rgba(28, 32, 48, 196),
+    inset_border: rgba(255, 255, 255, 24),
+    field: rgba(28, 32, 48, 222),
+    text: Color32::from_rgb(0xf8, 0xfa, 0xfc),
+    muted: Color32::from_rgb(0x94, 0xa3, 0xb8),
+    faint: Color32::from_rgb(0x64, 0x74, 0x8b),
+    dots: rgba(255, 255, 255, 14),
+    shadow: rgba(0, 0, 0, 170),
+};
+
+static MODERN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches shared controls (option tiles) to the modern look.
+pub fn set_modern(on: bool) {
+    MODERN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_modern() -> bool {
+    MODERN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // ---------------------------------------------------------------- fonts
 
 const SEMI: &str = "inter-semibold";
@@ -158,6 +217,11 @@ pub fn ink(p: &Palette, c: Color32) -> Color32 {
 
 /// A rounded rectangle filled with a left-to-right gradient, anti-aliased.
 pub fn gradient_rect(ui: &Ui, rect: Rect, radius: f32, from: Color32, to: Color32) {
+    ui.painter().add(gradient_shape(ui, rect, radius, from, to));
+}
+
+/// The shape `gradient_rect` paints, for painting behind content later.
+pub fn gradient_shape(ui: &Ui, rect: Rect, radius: f32, from: Color32, to: Color32) -> egui::Shape {
     let mut points = Vec::new();
     rounded_rectangle(&mut points, rect, CornerRadiusF32::same(radius));
     let mut path = Path::default();
@@ -169,7 +233,7 @@ pub fn gradient_rect(ui: &Ui, rect: Rect, radius: f32, from: Color32, to: Color3
         let cover = v.color.a() as f32 / 255.0;
         v.color = alpha(lerp(from, to, (v.pos.x - rect.left()) / w), cover);
     }
-    ui.painter().add(egui::Shape::mesh(mesh));
+    egui::Shape::mesh(mesh)
 }
 
 /// A soft round glow fading to nothing at `radius`.
@@ -667,6 +731,9 @@ pub fn option_tile(
     color: Color32,
     width: f32,
 ) -> Response {
+    if is_modern() {
+        return switch_row(ui, p, icon, label, value, color, width);
+    }
     let text_w = width - 40.0 - 44.0;
     let galley = ui.painter().layout(
         label.to_string(),
@@ -852,4 +919,214 @@ pub fn flow<T>(
         });
         ui.add_space(gap - ui.spacing().item_spacing.y);
     }
+}
+
+// ---------------------------------------------------------------- modern look
+
+fn paint_switch(ui: &Ui, p: &Palette, rect: Rect, on: bool, color: Color32, id: egui::Id) {
+    let t = ui.ctx().animate_bool_with_time(id.with("sw"), on, 0.16);
+    let track = lerp(p.field, color, t);
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(255),
+        track,
+        Stroke::new(1.0, lerp(p.inset_border, color, t)),
+        egui::StrokeKind::Inside,
+    );
+    let x = rect.left() + 11.0 + t * 18.0;
+    let c = Pos2::new(x, rect.center().y);
+    ui.painter()
+        .circle_filled(c + Vec2::new(0.0, 1.0), 8.5, alpha(Color32::BLACK, 0.18));
+    ui.painter().circle_filled(c, 8.0, Color32::WHITE);
+}
+
+/// A settings row: small icon, label, switch on the right, hairline below.
+fn switch_row(
+    ui: &mut Ui,
+    p: &Palette,
+    icon: &str,
+    label: &str,
+    value: &mut bool,
+    color: Color32,
+    width: f32,
+) -> Response {
+    let text_w = width - 30.0 - 58.0;
+    let galley = ui.painter().layout(
+        label.to_string(),
+        FontId::proportional(13.0),
+        p.text,
+        text_w.max(40.0),
+    );
+    let height = (galley.size().y + 18.0).max(40.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(10), alpha(color, 0.06));
+    }
+    ui.painter().text(
+        Pos2::new(rect.left() + 13.0, rect.center().y),
+        Align2::CENTER_CENTER,
+        icon,
+        FontId::proportional(13.0),
+        ink(p, color),
+    );
+    ui.painter().galley(
+        Pos2::new(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        p.text,
+    );
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        Stroke::new(1.0, p.inset_border),
+    );
+    let sw = Rect::from_center_size(
+        Pos2::new(rect.right() - 26.0, rect.center().y),
+        Vec2::new(40.0, 22.0),
+    );
+    paint_switch(ui, p, sw, *value, BLUE, resp.id);
+    let mut resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    if resp.clicked() {
+        *value = !*value;
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// Canvas for the modern look: two soft aurora glows and a fine dot grid.
+pub fn modern_backdrop(painter: &egui::Painter, rect: Rect, p: &Palette, a: Color32, b: Color32) {
+    painter.rect_filled(rect, CornerRadius::ZERO, p.bg);
+    let k = if p.dark { 0.22 } else { 0.30 };
+    let r = rect.width().max(rect.height()) * 0.42;
+    glow(
+        painter,
+        rect.left_top() + Vec2::new(80.0, 60.0),
+        r,
+        alpha(a, k),
+    );
+    glow(
+        painter,
+        rect.right_bottom() - Vec2::new(80.0, 70.0),
+        r,
+        alpha(b, k),
+    );
+    let step = 22.0;
+    let mut y = rect.top() + 11.0;
+    while y < rect.bottom() {
+        let mut x = rect.left() + 11.0;
+        while x < rect.right() {
+            painter.circle_filled(Pos2::new(x, y), 0.9, p.dots);
+            x += step;
+        }
+        y += step;
+    }
+}
+
+/// A floating glass island (header groups, ribbon, dock).
+pub fn island(p: &Palette, radius: u8, margin: Margin) -> Frame {
+    Frame::default()
+        .fill(p.glass)
+        .stroke(Stroke::new(1.0, p.glass_border))
+        .corner_radius(CornerRadius::same(radius))
+        .inner_margin(margin)
+        .shadow(Shadow {
+            offset: [0, 10],
+            blur: 28,
+            spread: 0,
+            color: p.shadow,
+        })
+}
+
+/// A neutral pill button with optional count badge (header actions).
+pub fn pill(ui: &mut Ui, p: &Palette, text: &str, selected: bool, badge: Option<&str>) -> Response {
+    let font = semi(12.5);
+    let size = text_size(ui, text, &font);
+    let badge_w = badge
+        .map(|b| text_size(ui, b, &mono(10.5)).x + 10.0)
+        .unwrap_or(0.0);
+    let extra = if badge.is_some() { badge_w + 6.0 } else { 0.0 };
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(size.x + 26.0 + extra, 30.0), Sense::click());
+    let lift = if resp.hovered() { -1.0 } else { 0.0 };
+    let r = rect.translate(Vec2::new(0.0, lift));
+    let fill = if selected {
+        tint(p, BLUE)
+    } else if p.dark {
+        rgba(28, 32, 48, 220)
+    } else {
+        Color32::WHITE
+    };
+    ui.painter().rect(
+        r,
+        CornerRadius::same(255),
+        fill,
+        Stroke::new(
+            1.0,
+            if selected || resp.hovered() {
+                alpha(BLUE, 0.4)
+            } else {
+                p.glass_border
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        Pos2::new(r.left() + 13.0, r.center().y),
+        Align2::LEFT_CENTER,
+        text,
+        font,
+        p.text,
+    );
+    if let Some(b) = badge {
+        let br = Rect::from_min_size(
+            Pos2::new(r.right() - 11.0 - badge_w, r.center().y - 8.0),
+            Vec2::new(badge_w, 16.0),
+        );
+        ui.painter()
+            .rect_filled(br, CornerRadius::same(255), p.field);
+        ui.painter()
+            .text(br.center(), Align2::CENTER_CENTER, b, mono(10.5), p.muted);
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// A small toggle chip (mirror options in the ribbon).
+pub fn toggle_chip(
+    ui: &mut Ui,
+    p: &Palette,
+    text: &str,
+    on: &mut bool,
+    grad: (Color32, Color32),
+) -> Response {
+    let font = semi(11.5);
+    let size = text_size(ui, text, &font);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(size.x + 22.0, 26.0), Sense::click());
+    if *on {
+        gradient_rect(ui, rect, 13.0, grad.0, grad.1);
+    } else {
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(255),
+            if resp.hovered() {
+                tint(p, grad.0)
+            } else {
+                p.field
+            },
+            Stroke::new(1.0, p.inset_border),
+            egui::StrokeKind::Inside,
+        );
+    }
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        font,
+        if *on { Color32::WHITE } else { p.muted },
+    );
+    let mut resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    resp
 }

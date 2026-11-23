@@ -28,6 +28,8 @@ pub struct Settings {
     pub clipboard: bool,
     pub save_dir: PathBuf,
     pub dark_theme: bool,
+    /// Window look: false = Studio, true = Modern.
+    pub modern_look: bool,
     pub mirror: MirrorSettings,
     /// Phones added for WiFi mirroring (ip:port).
     pub wifi_phones: Vec<String>,
@@ -139,6 +141,7 @@ impl Default for Settings {
             clipboard: true,
             save_dir: default_save_dir(),
             dark_theme: true,
+            modern_look: false,
             mirror: MirrorSettings::default(),
             wifi_phones: Vec::new(),
             storage_address: String::new(),

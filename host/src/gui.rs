@@ -21,6 +21,9 @@ use crate::state::{
 };
 use crate::{mirror, storage, wifi_pair};
 
+#[path = "gui_modern.rs"]
+mod modern;
+
 const ANDROID_APP_URL: &str = "https://github.com/Hafij-BGE/Second-monitor/releases/latest";
 /// Lets pen pressure reach /dev/uinput; the .deb installs the same rule.
 #[cfg(target_os = "linux")]
@@ -35,6 +38,8 @@ enum Tab {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drawer {
+    /// WiFi addresses and USB status (Modern look).
+    Wifi,
     Security,
     Options,
     Log,
@@ -171,9 +176,12 @@ struct App {
     addresses: Vec<IpAddr>,
     addresses_at: Instant,
     host_name: String,
-    applied_dark: Option<bool>,
+    /// (dark, modern) the visuals were last set for.
+    applied_dark: Option<(bool, bool)>,
     logo: Option<egui::TextureHandle>,
     tab: Tab,
+    /// Mode shown by the Modern look.
+    mtab: modern::MTab,
     drawer: Option<Drawer>,
     /// Device id of the pairing request we already raised the window for.
     pairing_seen: Option<String>,
@@ -217,7 +225,9 @@ impl App {
                 Ok("storage") | Ok("shortcuts") => Tab::Storage,
                 _ => Tab::Screen,
             },
+            mtab: modern::MTab::from_env(),
             drawer: match std::env::var("SMON_DRAWER").as_deref() {
+                Ok("wifi") => Some(Drawer::Wifi),
                 Ok("security") => Some(Drawer::Security),
                 Ok("options") => Some(Drawer::Options),
                 Ok("log") => Some(Drawer::Log),
@@ -238,19 +248,24 @@ impl App {
     }
 
     fn palette(&self) -> &'static Palette {
-        if self.shared.settings().dark_theme {
-            &kit::DARK
-        } else {
-            &kit::LIGHT
+        let s = self.shared.settings();
+        match (s.modern_look, s.dark_theme) {
+            (false, true) => &kit::DARK,
+            (false, false) => &kit::LIGHT,
+            (true, true) => &kit::MODERN_DARK,
+            (true, false) => &kit::MODERN_LIGHT,
         }
     }
 
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        let dark = self.shared.settings().dark_theme;
-        if self.applied_dark == Some(dark) {
+        let s = self.shared.settings();
+        let (dark, modern) = (s.dark_theme, s.modern_look);
+        if self.applied_dark == Some((dark, modern)) {
             return;
         }
-        self.applied_dark = Some(dark);
+        self.applied_dark = Some((dark, modern));
+        kit::set_modern(modern);
+        let accent = if modern { kit::BLUE } else { kit::PURPLE };
         let p = self.palette();
         let mut visuals = if dark {
             egui::Visuals::dark()
@@ -269,9 +284,9 @@ impl App {
         visuals.window_corner_radius = CornerRadius::same(14);
         visuals.menu_corner_radius = CornerRadius::same(12);
         visuals.extreme_bg_color = field;
-        visuals.selection.bg_fill = kit::PURPLE;
+        visuals.selection.bg_fill = accent;
         visuals.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-        visuals.hyperlink_color = kit::ink(p, kit::PURPLE);
+        visuals.hyperlink_color = kit::ink(p, accent);
         visuals.override_text_color = None;
         for w in [
             &mut visuals.widgets.noninteractive,
@@ -288,9 +303,9 @@ impl App {
         visuals.widgets.inactive.bg_fill = field;
         visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, p.inset_border);
         visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, p.text);
-        visuals.widgets.hovered.weak_bg_fill = kit::lerp(field, kit::PURPLE, 0.12);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, kit::alpha(kit::PURPLE, 0.5));
-        visuals.widgets.active.weak_bg_fill = kit::lerp(field, kit::PURPLE, 0.2);
+        visuals.widgets.hovered.weak_bg_fill = kit::lerp(field, accent, 0.12);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, kit::alpha(accent, 0.5));
+        visuals.widgets.active.weak_bg_fill = kit::lerp(field, accent, 0.2);
         let theme = if dark {
             egui::Theme::Dark
         } else {
@@ -1873,6 +1888,7 @@ impl App {
                 ui.set_width(width - 40.0);
                 ui.set_height(height - 40.0);
                 let (title, color) = match which {
+                    Drawer::Wifi => ("WiFi & USB", kit::CYAN),
                     Drawer::Security => ("Security & trusted tablets", kit::GREEN),
                     Drawer::Options => ("Host options", kit::PURPLE),
                     Drawer::Log => ("Activity log & About", kit::CYAN),
@@ -1893,6 +1909,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match which {
+                        Drawer::Wifi => self.wifi_panel(ui),
                         Drawer::Security => self.security_drawer(ui),
                         Drawer::Options => self.options_drawer(ui),
                         Drawer::Log => self.log_drawer(ui),
@@ -1979,6 +1996,22 @@ impl App {
         let p = self.palette();
         let s = self.shared.settings();
         let w = ui.available_width();
+        kit::field_label(ui, p, "Window look");
+        if let Some(v) = kit::segmented(
+            ui,
+            p,
+            &[(false, "Studio"), (true, "Modern")],
+            s.modern_look,
+            if s.modern_look {
+                kit::M_SCREEN_GRAD
+            } else {
+                kit::SCREEN_GRAD
+            },
+            w,
+        ) {
+            self.update_setting(|s| s.modern_look = v);
+        }
+        ui.add_space(10.0);
         let tile =
             |app: &mut App, ui: &mut Ui, icon: &str, label: &str, value: bool, color: Color32| {
                 let mut v = value;
@@ -2373,10 +2406,13 @@ impl App {
                         }
                         _ => {
                             title(ui, "✅  You're set");
-                            ui.label(
-                                RichText::new("Everything is in the tabs at the top: Spatial Screen, Phone Mirror, and Storage & Keys. Security, options and the log are the buttons at the top right.")
-                                    .color(p.text),
-                            );
+                            let where_ = if settings.modern_look {
+                                "Pick a mode in the dock at the bottom: Screen, Mirror, Storage and Keys. WiFi, security, options and the log are the buttons at the top right."
+                            } else {
+                                "Everything is in the tabs at the top: Spatial Screen, Phone Mirror, and Storage & Keys. Security, options and the log are the buttons at the top right."
+                            };
+                            ui.label(RichText::new(where_).color(p.text));
+                            kit::note(ui, p, "Options › Window look switches between the Studio and Modern looks.");
                             ui.add_space(6.0);
                             if settings.run_in_background {
                                 kit::note(
@@ -2627,6 +2663,22 @@ impl eframe::App for App {
         }
         self.apply_theme(&ctx);
         self.handle_dropped_files(&ctx);
+        if self.shared.settings().modern_look {
+            self.modern_ui(ui);
+        } else {
+            self.studio_ui(ui, &ctx);
+        }
+        self.welcome_guide(&ctx);
+        self.wifi_pair_dialog(&ctx);
+        self.pairing_dialog(&ctx);
+        self.toast(&ctx);
+        // Refresh stats even when no other event arrives.
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+}
+
+impl App {
+    fn studio_ui(&mut self, ui: &mut Ui, ctx: &egui::Context) {
         let p = self.palette();
         egui::CentralPanel::default()
             .frame(Frame::default().fill(p.bg))
@@ -2664,13 +2716,7 @@ impl eframe::App for App {
                         });
                     });
             });
-        self.drawer(&ctx);
-        self.welcome_guide(&ctx);
-        self.wifi_pair_dialog(&ctx);
-        self.pairing_dialog(&ctx);
-        self.toast(&ctx);
-        // Refresh stats even when no other event arrives.
-        ctx.request_repaint_after(Duration::from_secs(1));
+        self.drawer(ctx);
     }
 }
 
@@ -3102,8 +3148,9 @@ fn paint_phone(ui: &mut Ui, p: &Palette, info: &PhoneInfo, scale: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(200.0, 410.0) * s, Sense::hover());
     let painter = ui.painter_at(rect.expand(30.0));
     let body = Rect::from_min_size(rect.min, Vec2::new(200.0, 390.0) * s);
+    // Unclipped, so the glow fades out instead of ending in a box.
     kit::glow(
-        &painter,
+        ui.painter(),
         body.center(),
         190.0 * s,
         kit::alpha(kit::PINK, if p.dark { 0.16 } else { 0.10 }),
