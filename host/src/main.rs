@@ -10,6 +10,7 @@ mod discovery;
 mod encoder;
 mod files;
 mod gui;
+mod gui_kit;
 mod hotkeys;
 mod logging;
 mod mirror;
