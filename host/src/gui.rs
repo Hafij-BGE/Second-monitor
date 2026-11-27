@@ -249,7 +249,7 @@ impl App {
         }
     }
 
-    /// Glass (Planner) look: chosen in Options, or Harbor Settings' Planner
+    /// Lumina Glass look: chosen in Options, or Harbor Settings' Planner
     /// glass style while "follow Harbor" is on.
     fn glass_on(&self) -> bool {
         let s = self.shared.settings();
@@ -2035,7 +2035,7 @@ impl App {
         if let Some(v) = kit::segmented(
             ui,
             p,
-            &[(0u8, "Studio"), (1, "Modern"), (2, "Glass")],
+            &[(0u8, "Studio"), (1, "Modern"), (2, "Lumina Glass")],
             look,
             match look {
                 2 => (kit::INDIGO, kit::PURPLE),
@@ -2053,10 +2053,13 @@ impl App {
                 }
             });
         }
-        ui.add_space(6.0);
-        let mut follow = s.follow_harbor_glass;
-        if kit::option_tile(ui, p, "✨", "Follow Harbor Settings glass", &mut follow, kit::INDIGO, w).changed() {
-            self.update_setting(|s| s.follow_harbor_glass = follow);
+        // Linux only: Windows has no Harbor Settings, so the picker above is the whole choice.
+        if !cfg!(windows) {
+            ui.add_space(6.0);
+            let mut follow = s.follow_harbor_glass;
+            if kit::option_tile(ui, p, "✨", "Follow Harbor Settings glass", &mut follow, kit::INDIGO, w).changed() {
+                self.update_setting(|s| s.follow_harbor_glass = follow);
+            }
         }
         ui.add_space(10.0);
         let tile =

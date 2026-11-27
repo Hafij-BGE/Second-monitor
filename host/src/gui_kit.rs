@@ -154,7 +154,7 @@ pub const PLANNER_DARK: Palette = Palette {
 
 static GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Switches the modern layout to the Glass (Planner) backdrop.
+/// Switches the modern layout to the Lumina Glass backdrop.
 pub fn set_glass(on: bool) {
     GLASS.store(on, std::sync::atomic::Ordering::Relaxed);
 }

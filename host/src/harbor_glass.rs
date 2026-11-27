@@ -88,6 +88,10 @@ fn resolve() -> bool {
 
 /// True while Harbor Settings resolves the Planner glass style for Extendo.
 pub fn planner() -> bool {
+    // The Windows build has no Harbor Settings: there the look is the app's own choice.
+    if cfg!(windows) {
+        return false;
+    }
     let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     match *c {
         Some((at, v)) if at.elapsed() < Duration::from_secs(3) => v,
