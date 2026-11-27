@@ -178,6 +178,7 @@ struct App {
     host_name: String,
     /// (dark, modern) the visuals were last set for.
     applied_dark: Option<(bool, bool)>,
+    applied_glass: bool,
     logo: Option<egui::TextureHandle>,
     tab: Tab,
     /// Mode shown by the Modern look.
@@ -217,6 +218,7 @@ impl App {
             addresses_at: Instant::now(),
             host_name: crate::discovery::host_name(),
             applied_dark: None,
+            applied_glass: false,
             logo: load_logo(&cc.egui_ctx),
             // SMON_TAB=mirror|storage and SMON_DRAWER=security|options|log
             // open that page (for screenshots).
@@ -247,8 +249,23 @@ impl App {
         }
     }
 
+    /// Glass (Planner) look: chosen in Options, or Harbor Settings' Planner
+    /// glass style while "follow Harbor" is on.
+    fn glass_on(&self) -> bool {
+        let s = self.shared.settings();
+        s.glass_look || (s.follow_harbor_glass && crate::harbor_glass::planner())
+    }
+
+    /// Modern layout (Modern or Glass look).
+    fn modern_on(&self) -> bool {
+        self.shared.settings().modern_look || self.glass_on()
+    }
+
     fn palette(&self) -> &'static Palette {
         let s = self.shared.settings();
+        if self.glass_on() {
+            return if s.dark_theme { &kit::PLANNER_DARK } else { &kit::PLANNER_LIGHT };
+        }
         match (s.modern_look, s.dark_theme) {
             (false, true) => &kit::DARK,
             (false, false) => &kit::LIGHT,
@@ -259,13 +276,22 @@ impl App {
 
     fn apply_theme(&mut self, ctx: &egui::Context) {
         let s = self.shared.settings();
-        let (dark, modern) = (s.dark_theme, s.modern_look);
-        if self.applied_dark == Some((dark, modern)) {
+        let glass = self.glass_on();
+        let (dark, modern) = (s.dark_theme, s.modern_look || glass);
+        if self.applied_dark == Some((dark, modern)) && self.applied_glass == glass {
             return;
         }
         self.applied_dark = Some((dark, modern));
+        self.applied_glass = glass;
         kit::set_modern(modern);
-        let accent = if modern { kit::BLUE } else { kit::PURPLE };
+        kit::set_glass(glass);
+        let accent = if glass {
+            kit::INDIGO
+        } else if modern {
+            kit::BLUE
+        } else {
+            kit::PURPLE
+        };
         let p = self.palette();
         let mut visuals = if dark {
             egui::Visuals::dark()
@@ -273,7 +299,9 @@ impl App {
             egui::Visuals::light()
         };
         let solid = solid_fill(p);
-        let field = if dark {
+        let field = if glass {
+            p.field
+        } else if dark {
             Color32::from_rgb(0x15, 0x1a, 0x2a)
         } else {
             Color32::from_rgb(0xf1, 0xf4, 0xfa)
@@ -1997,19 +2025,38 @@ impl App {
         let s = self.shared.settings();
         let w = ui.available_width();
         kit::field_label(ui, p, "Window look");
+        let look = if self.glass_on() {
+            2u8
+        } else if s.modern_look {
+            1
+        } else {
+            0
+        };
         if let Some(v) = kit::segmented(
             ui,
             p,
-            &[(false, "Studio"), (true, "Modern")],
-            s.modern_look,
-            if s.modern_look {
-                kit::M_SCREEN_GRAD
-            } else {
-                kit::SCREEN_GRAD
+            &[(0u8, "Studio"), (1, "Modern"), (2, "Glass")],
+            look,
+            match look {
+                2 => (kit::INDIGO, kit::PURPLE),
+                1 => kit::M_SCREEN_GRAD,
+                _ => kit::SCREEN_GRAD,
             },
             w,
         ) {
-            self.update_setting(|s| s.modern_look = v);
+            // Picking Studio or Modern also stops following Harbor's Glass.
+            self.update_setting(|s| {
+                s.glass_look = v == 2;
+                if v != 2 {
+                    s.modern_look = v == 1;
+                    s.follow_harbor_glass = false;
+                }
+            });
+        }
+        ui.add_space(6.0);
+        let mut follow = s.follow_harbor_glass;
+        if kit::option_tile(ui, p, "✨", "Follow Harbor Settings glass", &mut follow, kit::INDIGO, w).changed() {
+            self.update_setting(|s| s.follow_harbor_glass = follow);
         }
         ui.add_space(10.0);
         let tile =
@@ -2406,7 +2453,7 @@ impl App {
                         }
                         _ => {
                             title(ui, "✅  You're set");
-                            let where_ = if settings.modern_look {
+                            let where_ = if settings.modern_look || settings.glass_look || (settings.follow_harbor_glass && crate::harbor_glass::planner()) {
                                 "Pick a mode in the dock at the bottom: Screen, Mirror, Storage and Keys. WiFi, security, options and the log are the buttons at the top right."
                             } else {
                                 "Everything is in the tabs at the top: Spatial Screen, Phone Mirror, and Storage & Keys. Security, options and the log are the buttons at the top right."
@@ -2663,7 +2710,7 @@ impl eframe::App for App {
         }
         self.apply_theme(&ctx);
         self.handle_dropped_files(&ctx);
-        if self.shared.settings().modern_look {
+        if self.modern_on() {
             self.modern_ui(ui);
         } else {
             self.studio_ui(ui, &ctx);

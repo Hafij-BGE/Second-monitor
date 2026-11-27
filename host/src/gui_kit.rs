@@ -119,6 +119,69 @@ pub const MODERN_DARK: Palette = Palette {
     shadow: rgba(0, 0, 0, 170),
 };
 
+/// Glass look (PLANNER palette v3 "Planner Glass", shared with Harbor and the
+/// user's other apps): lavender -> periwinkle backdrop, translucent white glass.
+pub const PLANNER_LIGHT: Palette = Palette {
+    dark: false,
+    bg: Color32::from_rgb(220, 224, 255),
+    glass: rgba(255, 255, 255, 150),
+    glass_border: rgba(255, 255, 255, 217),
+    inset: rgba(255, 255, 255, 120),
+    inset_border: rgba(255, 255, 255, 230),
+    field: rgba(255, 255, 255, 140),
+    text: Color32::from_rgb(0x1e, 0x1b, 0x3a),
+    muted: Color32::from_rgb(0x5b, 0x57, 0x78),
+    faint: Color32::from_rgb(0x8f, 0x8b, 0xab),
+    dots: rgba(0, 0, 0, 0),
+    shadow: rgba(76, 61, 180, 60),
+};
+
+/// Glass look, dark: ink-indigo backdrop and smoky violet glass.
+pub const PLANNER_DARK: Palette = Palette {
+    dark: true,
+    bg: Color32::from_rgb(27, 31, 69),
+    glass: rgba(44, 39, 84, 160),
+    glass_border: rgba(255, 255, 255, 34),
+    inset: rgba(255, 255, 255, 16),
+    inset_border: rgba(255, 255, 255, 34),
+    field: rgba(255, 255, 255, 18),
+    text: Color32::from_rgb(0xee, 0xed, 0xf9),
+    muted: Color32::from_rgb(0xaa, 0xa7, 0xc8),
+    faint: Color32::from_rgb(0x75, 0x72, 0x9a),
+    dots: rgba(0, 0, 0, 0),
+    shadow: rgba(0, 0, 0, 150),
+};
+
+static GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the modern layout to the Glass (Planner) backdrop.
+pub fn set_glass(on: bool) {
+    GLASS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_glass() -> bool {
+    GLASS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The Planner Glass backdrop: a 150-degree lavender -> periwinkle gradient
+/// (dark: ink indigo).
+pub fn planner_backdrop(painter: &egui::Painter, rect: Rect, dark: bool) {
+    let (a, b, c) = if dark {
+        (Color32::from_rgb(26, 21, 51), Color32::from_rgb(27, 31, 69), Color32::from_rgb(20, 26, 58))
+    } else {
+        (Color32::from_rgb(232, 218, 255), Color32::from_rgb(220, 224, 255), Color32::from_rgb(203, 220, 255))
+    };
+    let mut mesh = Mesh::default();
+    // corners: top-left a, top-right / bottom-left b, bottom-right c
+    mesh.colored_vertex(rect.left_top(), a);
+    mesh.colored_vertex(rect.right_top(), b);
+    mesh.colored_vertex(rect.right_bottom(), c);
+    mesh.colored_vertex(rect.left_bottom(), b);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 static MODERN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Switches shared controls (option tiles) to the modern look.
@@ -995,6 +1058,10 @@ fn switch_row(
 
 /// Canvas for the modern look: two soft aurora glows and a fine dot grid.
 pub fn modern_backdrop(painter: &egui::Painter, rect: Rect, p: &Palette, a: Color32, b: Color32) {
+    if is_glass() {
+        planner_backdrop(painter, rect, p.dark);
+        return;
+    }
     painter.rect_filled(rect, CornerRadius::ZERO, p.bg);
     let k = if p.dark { 0.22 } else { 0.30 };
     let r = rect.width().max(rect.height()) * 0.42;

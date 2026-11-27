@@ -11,6 +11,7 @@ mod encoder;
 mod files;
 mod gui;
 mod gui_kit;
+mod harbor_glass;
 mod hotkeys;
 mod logging;
 mod mirror;
