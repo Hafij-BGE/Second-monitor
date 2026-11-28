@@ -177,9 +177,9 @@ pub fn planner_backdrop(painter: &egui::Painter, rect: Rect, dark: bool) {
     let (a, b, c) = if let Some((cols, k)) = tint {
         // Lumina Colourful: only a faint tint of the colours (same as planner_glass.py)
         let (base, amt) = if dark {
-            ([20.0, 16.0, 40.0], [0.13, 0.12, 0.11])
+            ([20.0, 16.0, 40.0], [0.09, 0.08, 0.07])
         } else {
-            ([250.0, 248.0, 255.0], [0.11, 0.09, 0.10])
+            ([250.0, 248.0, 255.0], [0.06, 0.045, 0.055])
         };
         let mix = |i: usize| {
             let m = |j: usize| (base[j] + (cols[i][j] as f32 - base[j]) * amt[i] * k).round() as u8;
