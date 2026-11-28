@@ -123,7 +123,7 @@ pub const MODERN_DARK: Palette = Palette {
 /// user's other apps): lavender -> periwinkle backdrop, translucent white glass.
 pub const PLANNER_LIGHT: Palette = Palette {
     dark: false,
-    bg: Color32::from_rgb(220, 224, 255),
+    bg: Color32::from_rgb(226, 214, 255),
     glass: rgba(255, 255, 255, 150),
     glass_border: rgba(255, 255, 255, 217),
     inset: rgba(255, 255, 255, 120),
@@ -139,7 +139,7 @@ pub const PLANNER_LIGHT: Palette = Palette {
 /// Glass look, dark: ink-indigo backdrop and smoky violet glass.
 pub const PLANNER_DARK: Palette = Palette {
     dark: true,
-    bg: Color32::from_rgb(27, 31, 69),
+    bg: Color32::from_rgb(30, 24, 74),
     glass: rgba(44, 39, 84, 160),
     glass_border: rgba(255, 255, 255, 34),
     inset: rgba(255, 255, 255, 16),
@@ -167,9 +167,9 @@ pub fn is_glass() -> bool {
 /// (dark: ink indigo).
 pub fn planner_backdrop(painter: &egui::Painter, rect: Rect, dark: bool) {
     let (a, b, c) = if dark {
-        (Color32::from_rgb(26, 21, 51), Color32::from_rgb(27, 31, 69), Color32::from_rgb(20, 26, 58))
+        (Color32::from_rgb(48, 20, 60), Color32::from_rgb(30, 24, 74), Color32::from_rgb(14, 34, 70))
     } else {
-        (Color32::from_rgb(232, 218, 255), Color32::from_rgb(220, 224, 255), Color32::from_rgb(203, 220, 255))
+        (Color32::from_rgb(255, 214, 236), Color32::from_rgb(226, 214, 255), Color32::from_rgb(200, 226, 255))
     };
     let mut mesh = Mesh::default();
     // corners: top-left a, top-right / bottom-left b, bottom-right c
