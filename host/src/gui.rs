@@ -264,7 +264,13 @@ impl App {
     fn palette(&self) -> &'static Palette {
         let s = self.shared.settings();
         if self.glass_on() {
-            return if s.dark_theme { &kit::PLANNER_DARK } else { &kit::PLANNER_LIGHT };
+            let soft = s.follow_harbor_glass && crate::harbor_glass::current().soft;
+            return match (s.dark_theme, soft) {
+                (true, false) => &kit::PLANNER_DARK,
+                (false, false) => &kit::PLANNER_LIGHT,
+                (true, true) => &kit::PLANNER_DARK_SOFT,
+                (false, true) => &kit::PLANNER_LIGHT_SOFT,
+            };
         }
         match (s.modern_look, s.dark_theme) {
             (false, true) => &kit::DARK,

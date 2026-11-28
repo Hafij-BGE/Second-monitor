@@ -4,9 +4,13 @@
 //! block, or empty/`harbor`/`global` = follow) -> ~/.config/harbor/glass (the
 //! old "all Harbor apps" scope; a block is used, anything else follows) ->
 //! Fusion Desk's glass GSettings, else glass-global.
-//! The answer is cached for a few seconds so the window can ask every frame.
+//! Layers: read (files, Fusion GSettings) -> resolve (one key=value list,
+//! same rules as planner_glass.py) -> `Look` (what the window paints).
+//! The window asks every frame; the answer is cached and refreshed on a
+//! background thread, so `gsettings` calls never block painting.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -19,9 +23,14 @@ pub struct Look {
     pub colours: Option<[[u8; 3]; 3]>,
     /// Colour intensity, 0.2 to 1.0.
     pub intensity: f32,
+    /// Glass effect Soft: flat frosted glass (faint rim, almost no shadow).
+    pub soft: bool,
+    /// Which layer decided the look (for the log line when it changes).
+    pub source: &'static str,
 }
 
 static CACHE: Mutex<Option<(Instant, Look)>> = Mutex::new(None);
+static REFRESHING: AtomicBool = AtomicBool::new(false);
 
 fn dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -31,13 +40,17 @@ fn dir() -> Option<PathBuf> {
 }
 
 /// The key=value pairs of a block, or `None` for "follow" content.
+/// Pairs may be split by lines or commas; the legacy word `off` is OFF.
 fn pairs(text: &str) -> Option<Vec<(String, String)>> {
     let t = text.trim();
+    if t == "off" {
+        return Some(vec![("effect".to_string(), "OFF".to_string())]);
+    }
     if t.is_empty() || t == "harbor" || t == "global" || !t.contains('=') {
         return None;
     }
     Some(
-        t.lines()
+        t.split(['\n', ','])
             .filter_map(|l| l.split_once('='))
             .map(|(k, v)| {
                 let v = v.split_whitespace().next().unwrap_or("");
@@ -47,19 +60,21 @@ fn pairs(text: &str) -> Option<Vec<(String, String)>> {
     )
 }
 
+/// The last value of a key (a later line wins, as in planner_glass.py).
 fn get<'a>(p: &'a [(String, String)], key: &str) -> Option<&'a str> {
-    p.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+    p.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
 /// `Some(is_planner)` for a key=value block, `None` for "follow" content.
 #[cfg(test)]
 fn block(text: &str) -> Option<bool> {
-    pairs(text).map(|p| look(&p).planner)
+    pairs(text).map(|p| look(&p, "test").planner)
 }
 
-fn look(p: &[(String, String)]) -> Look {
+fn look(p: &[(String, String)], source: &'static str) -> Look {
     let up = |k: &str, d: &str| get(p, k).unwrap_or(d).to_uppercase();
-    let planner = up("effect", "STRONG") != "OFF" && up("style", "FROSTED") == "PLANNER";
+    let effect = up("effect", "STRONG");
+    let planner = effect != "OFF" && up("style", "FROSTED") == "PLANNER";
     let colourful = planner && up("lumina", "CALM") == "COLOURFUL";
     let intensity = get(p, "lumina-intensity")
         .and_then(|v| v.parse::<f32>().ok())
@@ -72,12 +87,13 @@ fn look(p: &[(String, String)]) -> Look {
             get(p, "lumina-colour").unwrap_or("#8b5cf6"),
         )
     });
-    Look { planner, colours, intensity }
+    Look { planner, colours, intensity, soft: effect == "SOFT", source }
 }
 
 fn hex(v: &str) -> Option<[u8; 3]> {
-    let v = v.trim().trim_start_matches('#');
-    if v.len() != 6 {
+    let v = v.trim().strip_prefix('#')?;
+    // ASCII only: slicing by bytes below must land on char boundaries
+    if v.len() != 6 || !v.is_ascii() {
         return None;
     }
     let b = |i: usize| u8::from_str_radix(&v[i..i + 2], 16).ok();
@@ -159,15 +175,24 @@ fn triad(rgb: [u8; 3]) -> [[u8; 3]; 3] {
     [at(-32.0 / 360.0), at(0.0), at(32.0 / 360.0)]
 }
 
+/// Fusion Desk's schema folder: the user's install first, then system-wide
+/// (same search as planner_glass.py).
+#[cfg(unix)]
+fn fusion_schemas() -> Option<PathBuf> {
+    const UUID: &str = "fusion-desk@hafij-deu.github.io";
+    let user = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    user.into_iter()
+        .chain(["/usr/share", "/usr/local/share"].map(PathBuf::from))
+        .map(|base| base.join("gnome-shell/extensions").join(UUID).join("schemas"))
+        .find(|dir| dir.join("gschemas.compiled").is_file())
+}
+
 /// Fusion Desk's glass keys, when its schema is installed.
 #[cfg(unix)]
 fn fusion() -> Option<Vec<(String, String)>> {
-    let home = std::env::var_os("HOME")?;
-    let schemas = PathBuf::from(home)
-        .join(".local/share/gnome-shell/extensions/fusion-desk@hafij-deu.github.io/schemas");
-    if !schemas.is_dir() {
-        return None;
-    }
+    let schemas = fusion_schemas()?;
     let get = |key: &str| -> Option<String> {
         let out = std::process::Command::new("gsettings")
             .arg("--schemadir")
@@ -200,43 +225,74 @@ fn fusion() -> Option<Vec<(String, String)>> {
 fn resolve() -> Look {
     if let Ok(v) = std::env::var("PLANNER_GLASS") {
         if v.trim().eq_ignore_ascii_case("planner") {
-            return Look { planner: true, intensity: 0.7, ..Look::default() };
+            return Look { planner: true, intensity: 0.7, source: "PLANNER_GLASS", ..Look::default() };
         }
-        return pairs(&v.replace(',', "\n")).map(|p| look(&p)).unwrap_or_default();
+        return pairs(&v).map(|p| look(&p, "PLANNER_GLASS")).unwrap_or_default();
     }
     let Some(d) = dir() else { return Look::default() };
     let read = |name: &str| std::fs::read_to_string(d.join(name)).ok();
-    for name in ["glass-extendo", "glass"] {
+    for (name, source) in [("glass-extendo", "glass-extendo"), ("glass", "glass")] {
         if let Some(p) = read(name).as_deref().and_then(pairs) {
-            return look(&p);
+            return look(&p, source);
         }
     }
     let global = read("glass-global").as_deref().and_then(pairs).unwrap_or_default();
     match fusion() {
+        // Older Fusion Desk builds have no Lumina keys: those come from glass-global.
         Some(mut p) => {
             for (k, v) in &global {
                 if k.starts_with("lumina") && get(&p, k).is_none() {
                     p.push((k.clone(), v.clone()));
                 }
             }
-            look(&p)
+            look(&p, "Fusion Desk")
         }
-        None => look(&global),
+        None => look(&global, "glass-global"),
     }
 }
 
-/// What Harbor Settings resolves for Extendo, cached for 3 s.
+/// Resolve on a worker thread and store the answer; logs when the look changes.
+fn refresh_in_background() {
+    if REFRESHING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("harbor-glass".into()).spawn(|| {
+        let v = resolve();
+        let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if c.map(|(_, old)| old) != Some(v) {
+            log::info!("glass look: planner={} colourful={} soft={} (from {})",
+                v.planner, v.colours.is_some(), v.soft, v.source);
+        }
+        *c = Some((Instant::now(), v));
+        REFRESHING.store(false, Ordering::Release);
+    });
+    if let Err(e) = spawned {
+        log::warn!("glass look: could not start the refresh thread: {e}");
+        REFRESHING.store(false, Ordering::Release);
+    }
+}
+
+/// What Harbor Settings resolves for Extendo. The first call resolves at
+/// once; after that the cached answer is returned and refreshed in the
+/// background every 3 s.
 pub fn current() -> Look {
     // The Windows build has no Harbor Settings: there the look is the app's own choice.
     if cfg!(windows) {
         return Look::default();
     }
-    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    match *c {
-        Some((at, v)) if at.elapsed() < Duration::from_secs(3) => v,
-        _ => {
+    let cached = *CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    match cached {
+        Some((at, v)) => {
+            if at.elapsed() >= Duration::from_secs(3) {
+                refresh_in_background();
+            }
+            v
+        }
+        None => {
             let v = resolve();
-            *c = Some((Instant::now(), v));
+            log::info!("glass look: planner={} colourful={} soft={} (from {})",
+                v.planner, v.colours.is_some(), v.soft, v.source);
+            *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v));
             v
         }
     }
@@ -258,17 +314,36 @@ mod tests {
         assert_eq!(block("effect=STRONG\nstyle=PLANNER\n"), Some(true));
         assert_eq!(block("effect=OFF\nstyle=PLANNER\n"), Some(false));
         assert_eq!(block("style=FROSTED"), Some(false));
+        // legacy "off", commas, and the last duplicate key wins
+        assert_eq!(block("off"), Some(false));
+        assert_eq!(block("effect=STRONG,style=PLANNER"), Some(true));
+        assert_eq!(block("style=PLANNER\nstyle=SMOKE"), Some(false));
+    }
+
+    #[test]
+    fn bad_colour_does_not_panic() {
+        assert_eq!(hex("#aéabc"), None);
+        assert_eq!(hex("8b5cf6"), None); // needs the '#', like planner_glass.py
+        assert_eq!(hex("#8b5cf6"), Some([0x8b, 0x5c, 0xf6]));
+        let c = look(&pairs("style=PLANNER\nlumina=COLOURFUL\nlumina-colours=CUSTOM\nlumina-colour=#aéabc").unwrap(), "test");
+        assert!(c.colours.is_some());
+    }
+
+    #[test]
+    fn soft() {
+        assert!(look(&pairs("effect=SOFT\nstyle=PLANNER").unwrap(), "test").soft);
+        assert!(!look(&pairs("style=PLANNER").unwrap(), "test").soft);
     }
 
     #[test]
     fn lumina() {
-        let calm = look(&pairs("style=PLANNER").unwrap());
+        let calm = look(&pairs("style=PLANNER").unwrap(), "test");
         assert!(calm.planner && calm.colours.is_none());
-        let c = look(&pairs("style=PLANNER\nlumina=COLOURFUL\nlumina-intensity=40").unwrap());
+        let c = look(&pairs("style=PLANNER\nlumina=COLOURFUL\nlumina-intensity=40").unwrap(), "test");
         assert_eq!(c.colours, Some([[0xec, 0x48, 0x99], [0x8b, 0x5c, 0xf6], [0x38, 0xbd, 0xf8]]));
         assert!((c.intensity - 0.4).abs() < 1e-6);
         // Colourful needs the Lumina style itself
-        let off = look(&pairs("style=FROSTED\nlumina=COLOURFUL").unwrap());
+        let off = look(&pairs("style=FROSTED\nlumina=COLOURFUL").unwrap(), "test");
         assert!(off.colours.is_none());
     }
 }

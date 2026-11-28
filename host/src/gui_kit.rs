@@ -136,6 +136,14 @@ pub const PLANNER_LIGHT: Palette = Palette {
     shadow: rgba(76, 61, 180, 60),
 };
 
+/// Glass effect Soft (light): flat frosted glass, faint rim, almost no shadow
+/// (planner_glass.soften()).
+pub const PLANNER_LIGHT_SOFT: Palette = Palette {
+    glass_border: rgba(255, 255, 255, 102),
+    shadow: rgba(76, 61, 180, 24),
+    ..PLANNER_LIGHT
+};
+
 /// Glass look, dark: ink-indigo backdrop and smoky violet glass.
 pub const PLANNER_DARK: Palette = Palette {
     dark: true,
@@ -150,6 +158,13 @@ pub const PLANNER_DARK: Palette = Palette {
     faint: Color32::from_rgb(0x75, 0x72, 0x9a),
     dots: rgba(0, 0, 0, 0),
     shadow: rgba(0, 0, 0, 150),
+};
+
+/// Glass effect Soft (dark).
+pub const PLANNER_DARK_SOFT: Palette = Palette {
+    glass_border: rgba(255, 255, 255, 15),
+    shadow: rgba(0, 0, 0, 60),
+    ..PLANNER_DARK
 };
 
 static GLASS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
