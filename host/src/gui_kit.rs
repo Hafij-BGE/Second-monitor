@@ -163,10 +163,30 @@ pub fn is_glass() -> bool {
     GLASS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static LUMINA: std::sync::Mutex<Option<([[u8; 3]; 3], f32)>> = std::sync::Mutex::new(None);
+
+/// Lumina Colourful: the backdrop's tint colours and intensity (None = Calm).
+pub fn set_lumina(tint: Option<([[u8; 3]; 3], f32)>) {
+    *LUMINA.lock().unwrap_or_else(|e| e.into_inner()) = tint;
+}
+
 /// The Planner Glass backdrop: a 150-degree lavender -> periwinkle gradient
 /// (dark: ink indigo).
 pub fn planner_backdrop(painter: &egui::Painter, rect: Rect, dark: bool) {
-    let (a, b, c) = if dark {
+    let tint = *LUMINA.lock().unwrap_or_else(|e| e.into_inner());
+    let (a, b, c) = if let Some((cols, k)) = tint {
+        // Lumina Colourful: only a faint tint of the colours (same as planner_glass.py)
+        let (base, amt) = if dark {
+            ([20.0, 16.0, 40.0], [0.13, 0.12, 0.11])
+        } else {
+            ([250.0, 248.0, 255.0], [0.11, 0.09, 0.10])
+        };
+        let mix = |i: usize| {
+            let m = |j: usize| (base[j] + (cols[i][j] as f32 - base[j]) * amt[i] * k).round() as u8;
+            Color32::from_rgb(m(0), m(1), m(2))
+        };
+        (mix(0), mix(1), mix(2))
+    } else if dark {
         (Color32::from_rgb(26, 21, 51), Color32::from_rgb(27, 31, 69), Color32::from_rgb(20, 26, 58))
     } else {
         (Color32::from_rgb(232, 218, 255), Color32::from_rgb(220, 224, 255), Color32::from_rgb(203, 220, 255))

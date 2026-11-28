@@ -277,6 +277,13 @@ impl App {
     fn apply_theme(&mut self, ctx: &egui::Context) {
         let s = self.shared.settings();
         let glass = self.glass_on();
+        // Lumina Colourful from Harbor Settings tints the glass backdrop
+        let look = crate::harbor_glass::current();
+        kit::set_lumina(if glass && s.follow_harbor_glass {
+            look.colours.map(|c| (c, look.intensity))
+        } else {
+            None
+        });
         let (dark, modern) = (s.dark_theme, s.modern_look || glass);
         if self.applied_dark == Some((dark, modern)) && self.applied_glass == glass {
             return;
